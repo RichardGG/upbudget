@@ -71,7 +71,7 @@
   <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
   <h2>Regular payments</h2>
   <div class="controls"><button id="findRec">Find regular payments</button></div>
-  <div id="recStatus" class="sub">Scans the last 2 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
+  <div id="recStatus" class="sub">Scans the last 10 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
   <div id="recTools" class="controls" hidden style="margin-top:8px;align-items:center">
     <span id="recSummary" class="sub" style="flex:1"></span>
     <label class="sub"><input type="checkbox" id="recOnly"> Confirmed only</label>
@@ -87,8 +87,8 @@
 const $ = id => document.getElementById(id);
 const money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 let all = [];
-const MAX_PAGES = 100; // 100 transactions per page
-const YEARS = 2;
+const MAX_PAGES = 300; // 100 transactions per page
+const YEARS = 10;
 
 // Default range: last 30 days
 const d = new Date(); $('until').value = d.toISOString().slice(0, 10);
@@ -363,7 +363,7 @@ async function findRecurring() {
     regKey = 'up_regulars_' + await tokenKey(auth.token);
     regulars = loadRegulars();
     recRows = detectRecurring(list);
-    el.textContent = `Analysed ${list.length} transactions from the last ${YEARS} years${meta.truncated ? ' (hit the 10,000 limit; older ones are missing)' : ''}. Tick the ones that really are regular.`;
+    el.textContent = `Analysed ${list.length} transactions from the last ${YEARS} years${meta.truncated ? ` (hit the ${(MAX_PAGES * 100).toLocaleString()} limit; older ones are missing)` : ''}. Tick the ones that really are regular.`;
     renderRecurring();
   } catch (e) {
     el.className = 'error'; el.textContent = netError(e);
