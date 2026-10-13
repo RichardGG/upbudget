@@ -24,6 +24,15 @@
   .sub { color:var(--muted); font-size:12px; }
   #status { color:var(--muted); margin:8px 0; }
   details { margin-bottom:12px; } summary { cursor:pointer; color:var(--muted); margin-bottom:8px; } a { color:var(--accent); }
+  :root { --src:#8a8aa0; --acct:#ff7a64; --xfer:#3b82f6; }
+  @media (prefers-color-scheme: dark) { :root { --src:#7a7a92; --xfer:#6aa5ff; } }
+  h2 { font-size:16px; margin:20px 0 4px; }
+  #flow { width:100%; height:auto; display:block; }
+  #flow text { fill:var(--fg); font-size:12px; }
+  #flow .muted { fill:var(--muted); font-size:11px; }
+  #flow .halo { stroke:var(--bg); stroke-width:4px; paint-order:stroke; }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-bottom:8px; }
+  .legend i { display:inline-block; width:14px; height:4px; border-radius:2px; margin-right:6px; vertical-align:middle; }
   .error { color:var(--neg); }
 </style>
 </head>
@@ -51,6 +60,13 @@
     <div><span>Net</span><b id="net">–</b></div>
   </div>
   <div id="status"></div>
+  <h2>Money flow</h2>
+  <div class="legend">
+    <span><i style="background:var(--src)"></i>External income</span>
+    <span><i style="background:var(--xfer)"></i>Transfers between accounts (net)</span>
+  </div>
+  <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
+  <h2>Transactions</h2>
   <table><tbody id="rows"></tbody></table>
 </main>
 <script>
@@ -109,6 +125,8 @@ async function load() {
       description: t.attributes.description, message: t.attributes.message, status: t.attributes.status,
       createdAt: t.attributes.createdAt, amount: Number(t.attributes.amount.valueInBaseUnits) / 100,
       account: names[t.relationships.account.data.id] || 'Unknown',
+      transferTo: names[t.relationships.transferAccount?.data?.id] || null,
+      isTransfer: Boolean(t.relationships.transferAccount?.data),
       category: t.relationships.category.data?.id || null,
     }));
     const accts = [...new Set(all.map(t => t.account))].sort();
@@ -116,7 +134,7 @@ async function load() {
     $('account').innerHTML = '<option value="">All accounts</option>' + accts.map(a => `<option>${esc(a)}</option>`).join('');
     $('account').value = accts.includes(cur) ? cur : '';
     $('status').textContent = txns.more ? 'Showing the first 500 transactions; narrow the date range for more.' : '';
-    render();
+    render(); renderFlow();
   } catch (e) {
     $('status').className = 'error';
     $('status').textContent = e instanceof TypeError
@@ -127,12 +145,85 @@ async function load() {
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+function renderFlow() {
+  const svg = $('flow');
+  // Incoming money from outside (not a transfer between own accounts), grouped by description
+  const srcMap = {}, accIn = {}, accounts = new Set(), pair = {};
+  for (const t of all) {
+    accounts.add(t.account);
+    if (t.isTransfer) {
+      if (t.amount < 0 && t.transferTo) {            // count each transfer once, from the sending side
+        accounts.add(t.transferTo);
+        const [a, b] = [t.account, t.transferTo].sort(), k = a + '\u0000' + b;
+        pair[k] = (pair[k] || 0) + (t.account === a ? -t.amount : t.amount); // + means a → b
+      }
+    } else if (t.amount > 0) {
+      (srcMap[t.description] ||= {})[t.account] = ((srcMap[t.description] || {})[t.account] || 0) + t.amount;
+      accIn[t.account] = (accIn[t.account] || 0) + t.amount;
+    }
+  }
+  // Keep the top sources; bundle the rest
+  const totals = Object.entries(srcMap).map(([n, m]) => [n, Object.values(m).reduce((a, b) => a + b, 0), m]).sort((x, y) => y[1] - x[1]);
+  const TOP = 8, sources = totals.slice(0, TOP).map(([name, total, m]) => ({ name, total, m }));
+  if (totals.length > TOP) {
+    const m = {}; let total = 0;
+    for (const [, tt, mm] of totals.slice(TOP)) { total += tt; for (const a in mm) m[a] = (m[a] || 0) + mm[a]; }
+    sources.push({ name: `Other (${totals.length - TOP})`, total, m });
+  }
+  const accts = [...accounts].sort((a, b) => (accIn[b] || 0) - (accIn[a] || 0));
+  const links = Object.entries(pair).filter(([, v]) => Math.abs(v) >= 0.005).map(([k, v]) => {
+    const [a, b] = k.split('\u0000'); return v > 0 ? { from: a, to: b, v } : { from: b, to: a, v: -v };
+  });
+  if (!sources.length && !links.length) { svg.setAttribute('viewBox', '0 0 900 60'); svg.innerHTML = '<text x="450" y="35" text-anchor="middle" class="muted">No incoming or transfer activity in this range.</text>'; return; }
+
+  const ROW = 64, PAD = 24, H = Math.max(sources.length, accts.length) * ROW + PAD * 2;
+  const sy = i => PAD + (i + 0.5) * (H - PAD * 2) / sources.length;
+  const ay = i => PAD + (i + 0.5) * (H - PAD * 2) / accts.length;
+  const SX = 230, AX = 380, AW = 170, AH = 40;
+  const max = Math.max(...sources.flatMap(x => Object.values(x.m)), ...links.map(l => l.v), 1);
+  const w = v => 1.5 + 14 * Math.sqrt(v / max);
+  const idx = Object.fromEntries(accts.map((a, i) => [a, i]));
+  const short = (t, n) => t.length > n ? t.slice(0, n - 1) + '…' : t;
+  let out = `<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--xfer)"/></marker></defs>`;
+  let width = 900;
+  // External → account
+  sources.forEach((src, i) => {
+    for (const [a, v] of Object.entries(src.m)) {
+      const x1 = SX, y1 = sy(i), x2 = AX, y2 = ay(idx[a]);
+      out += `<path d="M${x1} ${y1}C${(x1+x2)/2} ${y1} ${(x1+x2)/2} ${y2} ${x2} ${y2}" fill="none" stroke="var(--src)" stroke-opacity=".45" stroke-width="${w(v)}"><title>${esc(src.name)} → ${esc(a)}: ${money(v)}</title></path>`;
+    }
+  });
+  // Account → account (net), bulging out to the right
+  links.sort((p, q) => Math.abs(idx[p.from] - idx[p.to]) - Math.abs(idx[q.from] - idx[q.to]));
+  for (const l of links) {
+    const x = AX + AW, y1 = ay(idx[l.from]), y2 = ay(idx[l.to]), dy = Math.abs(y2 - y1);
+    const bx = x + 40 + dy * 0.35, off = y1 < y2 ? AH / 2 - 4 : -AH / 2 + 4;
+    out += `<path d="M${x} ${y1 + off}C${bx} ${y1 + off} ${bx} ${y2 - off} ${x + 2} ${y2 - off}" fill="none" stroke="var(--xfer)" stroke-opacity=".6" stroke-width="${w(l.v)}" marker-end="url(#arr)"><title>${esc(l.from)} → ${esc(l.to)}: ${money(l.v)}</title></path>`;
+    const lx = x + 0.75 * (bx - x) + 4, ly = (y1 + y2) / 2;
+    out += `<text class="halo" x="${lx}" y="${ly}" dominant-baseline="middle">${money(l.v)}</text><text x="${lx}" y="${ly}" dominant-baseline="middle">${money(l.v)}</text>`;
+    width = Math.max(width, lx + 70);
+  }
+  // Nodes
+  sources.forEach((src, i) => {
+    out += `<text x="${SX - 8}" y="${sy(i) - 6}" text-anchor="end"><title>${esc(src.name)}</title>${esc(short(src.name, 28))}</text>
+      <text class="muted" x="${SX - 8}" y="${sy(i) + 8}" text-anchor="end">${money(src.total)}</text>
+      <circle cx="${SX}" cy="${sy(i)}" r="4" fill="var(--src)"/>`;
+  });
+  accts.forEach((a, i) => {
+    out += `<rect x="${AX}" y="${ay(i) - AH / 2}" width="${AW}" height="${AH}" rx="8" fill="var(--acct)"/>
+      <text x="${AX + AW / 2}" y="${ay(i) - 4}" text-anchor="middle" style="fill:#fff;font-weight:600">${esc(short(a, 22))}</text>
+      <text x="${AX + AW / 2}" y="${ay(i) + 11}" text-anchor="middle" style="fill:#fff;font-size:11px">in: ${money(accIn[a] || 0)}</text>`;
+  });
+  svg.setAttribute('viewBox', `0 0 ${width} ${H}`);
+  svg.innerHTML = out;
+}
+
 function render() {
   const q = $('q').value.toLowerCase(), acct = $('account').value;
   const list = all.filter(t => (!acct || t.account === acct) &&
     (!q || `${t.description} ${t.message || ''} ${t.category || ''}`.toLowerCase().includes(q)));
-  // Internal transfers between your own accounts net to zero; exclude from totals.
-  const real = list.filter(t => t.category !== null || !/^(Transfer|Quick save|Round Up|Cover)/i.test(t.description));
+  // Transfers between your own accounts net to zero; exclude from totals.
+  const real = list.filter(t => !t.isTransfer);
   const inn = real.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
   const out = real.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
   $('in').textContent = money(inn); $('out').textContent = money(out);
