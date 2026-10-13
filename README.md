@@ -16,6 +16,12 @@ Browsers can only call the Up API directly if it allows cross-origin requests. I
 "Network/CORS error", deploy `worker/cors-proxy.js` as a Cloudflare Worker (edit `ALLOWED_ORIGIN`
 first) and put the worker URL in the **API base URL** setting (e.g. `https://upproxy.you.workers.dev/api/v1`).
 
+## Caching
+
+Transactions are cached in the browser (IndexedDB, one cache per token), so the first load pulls the full
+history and later loads only fetch the last 14 days (to pick up pending transactions settling), plus any older
+history you newly ask for. Use **Clear cache & reload** to refetch everything. Nothing leaves your browser.
+
 ## Features
 
 - Last 2 years by default (up to 10,000 transactions), editable date range

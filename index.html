@@ -56,6 +56,7 @@
     <input id="q" type="search" placeholder="Search…">
     <button id="load">Load</button>
   </div>
+  <div class="sub" style="margin-bottom:12px"><span id="cacheInfo">Nothing cached yet.</span> <a href="#" id="clearCache">Clear cache &amp; reload</a></div>
   <div class="summary">
     <div><span>Money in</span><b id="in" class="pos">–</b></div>
     <div><span>Money out</span><b id="out" class="neg">–</b></div>
@@ -120,50 +121,151 @@ function netError(e) {
     : e.message;
 }
 
-// Fetch accounts + transactions in a date range, following pagination up to maxPages (100 txns each).
-async function fetchTxns({ token, base }, sinceDate, untilDate, maxPages, onProgress) {
-  const q = new URLSearchParams({ 'page[size]': '100' });
-  if (sinceDate) q.set('filter[since]', new Date(sinceDate + 'T00:00:00').toISOString());
-  if (untilDate) q.set('filter[until]', new Date(untilDate + 'T23:59:59').toISOString());
-  const [accounts, txns] = await Promise.all([
-    upGet(`${base}/accounts`, token),
-    (async () => {
-      const out = []; let url = `${base}/transactions?${q}`;
-      for (let i = 0; i < maxPages && url; i++) {
-        const page = await upGet(url, token);
-        out.push(...page.data); url = page.links?.next;
-        if (onProgress) onProgress(out.length);
-      }
-      return { data: out, more: Boolean(url) };
-    })(),
-  ]);
-  const names = Object.fromEntries(accounts.data.map(a => [a.id, a.attributes.displayName]));
+// ---- Cache (IndexedDB, one database per token; falls back to memory) ----
+async function tokenKey(token) {
+  try {
+    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+    return [...new Uint8Array(h)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch { let h = 0; for (const c of token) h = (h * 31 + c.charCodeAt(0)) | 0; return String(h >>> 0); }
+}
+
+function memoryCache() {
+  const txns = new Map(), meta = new Map();
   return {
-    more: txns.more,
-    list: txns.data.map(t => ({
-      description: t.attributes.description, message: t.attributes.message, status: t.attributes.status,
-      createdAt: t.attributes.createdAt, amount: Number(t.attributes.amount.valueInBaseUnits) / 100,
-      account: names[t.relationships.account.data.id] || 'Unknown',
-      transferTo: names[t.relationships.transferAccount?.data?.id] || null,
-      isTransfer: Boolean(t.relationships.transferAccount?.data),
-      category: t.relationships.category.data?.id || null,
-    })),
+    all: async () => [...txns.values()],
+    replaceRange: async (from, to, rows) => {
+      for (const [id, r] of txns) { const t = Date.parse(r.createdAt); if (t >= from && t < to) txns.delete(id); }
+      rows.forEach(r => txns.set(r.id, r));
+    },
+    getMeta: async k => meta.get(k), setMeta: async (k, v) => { meta.set(k, v); },
+    clear: async () => { txns.clear(); meta.clear(); },
   };
 }
 
-async function load() {
+function idbCache(db) {
+  const run = (stores, mode, fn) => new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, mode); let result;
+    tx.oncomplete = () => resolve(result); tx.onerror = tx.onabort = () => reject(tx.error);
+    result = fn(tx);
+  });
+  const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  return {
+    all: () => req(db.transaction('txns').objectStore('txns').getAll()),
+    replaceRange: (from, to, rows) => new Promise((resolve, reject) => {
+      const tx = db.transaction('txns', 'readwrite'), st = tx.objectStore('txns');
+      st.getAll().onsuccess = e => {
+        for (const r of e.target.result) { const t = Date.parse(r.createdAt); if (t >= from && t < to) st.delete(r.id); }
+        rows.forEach(r => st.put(r));
+      };
+      tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(tx.error);
+    }),
+    getMeta: k => req(db.transaction('meta').objectStore('meta').get(k)),
+    setMeta: (k, v) => run('meta', 'readwrite', tx => tx.objectStore('meta').put(v, k)),
+    clear: () => run(['txns', 'meta'], 'readwrite', tx => { tx.objectStore('txns').clear(); tx.objectStore('meta').clear(); }),
+  };
+}
+
+const caches = {};
+async function getCache(token) {
+  const key = await tokenKey(token);
+  if (caches[key]) return caches[key];
+  let c;
+  try {
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open('upbudget-' + key, 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('txns', { keyPath: 'id' }); r.result.createObjectStore('meta'); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    c = idbCache(db);
+  } catch { c = memoryCache(); }
+  return (caches[key] = c);
+}
+
+// ---- API ----
+async function fetchAccounts({ token, base }) {
+  const res = await upGet(`${base}/accounts`, token);
+  return Object.fromEntries(res.data.map(a => [a.id, a.attributes.displayName]));
+}
+
+// Fetch raw transactions in [sinceMs, untilMs), newest first, up to maxPages (100 txns each).
+async function fetchRange({ token, base }, sinceMs, untilMs, maxPages, onProgress) {
+  const q = new URLSearchParams({ 'page[size]': '100' });
+  if (sinceMs) q.set('filter[since]', new Date(sinceMs).toISOString());
+  if (untilMs) q.set('filter[until]', new Date(untilMs).toISOString());
+  const rows = []; let url = `${base}/transactions?${q}`;
+  for (let i = 0; i < maxPages && url; i++) {
+    const page = await upGet(url, token);
+    for (const t of page.data) rows.push({
+      id: t.id, description: t.attributes.description, message: t.attributes.message, status: t.attributes.status,
+      createdAt: t.attributes.createdAt, amount: Number(t.attributes.amount.valueInBaseUnits) / 100,
+      accountId: t.relationships.account.data.id,
+      transferAccountId: t.relationships.transferAccount?.data?.id || null,
+      category: t.relationships.category.data?.id || null,
+    });
+    url = page.links?.next;
+    if (onProgress) onProgress(rows.length);
+  }
+  return { rows, more: Boolean(url) };
+}
+
+const DAY = 864e5, OVERLAP = 14 * DAY; // re-fetch recent days so held/pending transactions get their final state
+
+// Bring the cache up to date and make sure it reaches back to wantSinceMs. Only fetches what's missing.
+async function sync(auth, wantSinceMs, { force = false, onProgress } = {}) {
+  const c = await getCache(auth.token);
+  if (force) await c.clear();
+  const accounts = await fetchAccounts(auth);
+  await c.setMeta('accounts', accounts);
+  let meta = await c.getMeta('meta'), added = 0;
+  const now = Date.now();
+  if (!meta) {
+    const r = await fetchRange(auth, wantSinceMs, null, MAX_PAGES, onProgress);
+    await c.replaceRange(0, Infinity, r.rows); added = r.rows.length;
+    const oldest = Math.min(...r.rows.map(t => Date.parse(t.createdAt)), now);
+    meta = { coveredFrom: r.more ? oldest : wantSinceMs, truncated: r.more };
+  } else {
+    const newest = Math.max(...(await c.all()).map(t => Date.parse(t.createdAt)), meta.coveredFrom);
+    const from = Math.max(meta.coveredFrom, newest - OVERLAP);
+    const r = await fetchRange(auth, from, null, MAX_PAGES, onProgress);
+    await c.replaceRange(from, Infinity, r.rows); added = r.rows.length;
+    if (wantSinceMs < meta.coveredFrom && !meta.truncated) {   // user asked for older history than we hold
+      const old = await fetchRange(auth, wantSinceMs, meta.coveredFrom, MAX_PAGES, onProgress);
+      await c.replaceRange(wantSinceMs, meta.coveredFrom, old.rows); added += old.rows.length;
+      meta.coveredFrom = old.more ? Math.min(...old.rows.map(t => Date.parse(t.createdAt))) : wantSinceMs;
+      meta.truncated = old.more;
+    }
+  }
+  meta.syncedAt = now;
+  await c.setMeta('meta', meta);
+  const rows = (await c.all()).map(t => ({
+    ...t, account: accounts[t.accountId] || 'Unknown',
+    transferTo: accounts[t.transferAccountId] || null, isTransfer: Boolean(t.transferAccountId),
+  })).sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt));
+  return { rows, meta, added };
+}
+
+function showCacheInfo(rows, meta, added) {
+  $('cacheInfo').textContent = `Cached ${rows.length.toLocaleString()} transactions` +
+    (added ? ` (${added} fetched)` : ' (nothing new)') + ` · synced ${new Date(meta.syncedAt).toLocaleTimeString('en-AU')}` +
+    (meta.truncated ? ' · history limit reached, oldest transactions missing' : '');
+}
+
+async function load(force = false) {
   const auth = getAuth();
   $('status').className = '';
   if (!auth.token) { $('status').className = 'error'; $('status').textContent = 'Enter your Up token in Settings.'; return; }
   $('status').textContent = 'Loading…';
   try {
-    const { list, more } = await fetchTxns(auth, $('since').value, $('until').value, MAX_PAGES);
-    all = list;
+    const since = $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0;
+    const until = $('until').value ? new Date($('until').value + 'T23:59:59').getTime() : Infinity;
+    const { rows, meta, added } = await sync(auth, since, { force, onProgress: n => { $('status').textContent = `Loading… ${n} transactions`; } });
+    all = rows.filter(t => { const d = Date.parse(t.createdAt); return d >= since && d <= until; });
     const accts = [...new Set(all.map(t => t.account))].sort();
     const cur = $('account').value;
     $('account').innerHTML = '<option value="">All accounts</option>' + accts.map(a => `<option>${esc(a)}</option>`).join('');
     $('account').value = accts.includes(cur) ? cur : '';
-    $('status').textContent = more ? 'Showing the most recent 10,000 transactions; narrow the date range to see older ones.' : '';
+    $('status').textContent = '';
+    showCacheInfo(rows, meta, added);
     render(); renderFlow();
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
@@ -222,9 +324,11 @@ async function findRecurring() {
   el.className = 'sub';
   if (!auth.token) { el.className = 'error'; el.textContent = 'Enter your Up token in Settings.'; return; }
   const since = new Date(); since.setFullYear(since.getFullYear() - YEARS);
-  el.textContent = `Loading the last ${YEARS} years…`;
+  el.textContent = 'Syncing…';
   try {
-    const { list, more } = await fetchTxns(auth, since.toISOString().slice(0, 10), null, MAX_PAGES, n => { el.textContent = `Loading… ${n} transactions`; });
+    const { rows: cached, meta, added } = await sync(auth, since.getTime(), { onProgress: n => { el.textContent = `Loading… ${n} transactions`; } });
+    showCacheInfo(cached, meta, added);
+    const list = cached.filter(t => Date.parse(t.createdAt) >= since.getTime()), more = meta.truncated;
     const rows = detectRecurring(list);
     const fmt = d => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
     const active = rows.filter(r => !r.lapsed);
@@ -335,7 +439,8 @@ function render() {
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
 }
 
-$('load').onclick = load;
+$('load').onclick = () => load();
+$('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
 $('q').oninput = $('account').onchange = render;
 if ($('token').value) load();
