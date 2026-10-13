@@ -22,6 +22,7 @@ first) and put the worker URL in the **API base URL** setting (e.g. `https://upp
 - Filter by account, search by description/message/category
 - Money in / out / net totals (internal transfers excluded)
 - Money flow diagram: external income → accounts, plus net transfers between accounts
+- Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 12 months, with typical amount, next due date and estimated monthly cost
 
 ## Local preview
 
