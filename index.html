@@ -23,12 +23,21 @@
   .pos { color:var(--pos); } .neg { color:var(--neg); }
   .sub { color:var(--muted); font-size:12px; }
   #status { color:var(--muted); margin:8px 0; }
+  details { margin-bottom:12px; } summary { cursor:pointer; color:var(--muted); margin-bottom:8px; } a { color:var(--accent); }
   .error { color:var(--neg); }
 </style>
 </head>
 <body>
 <main>
   <h1>UpBudget</h1>
+  <details id="settings">
+    <summary>Settings</summary>
+    <div class="controls">
+      <input id="token" type="password" placeholder="Up personal access token (up:yeah:…)" autocomplete="off" style="flex:2">
+      <input id="base" type="url" placeholder="API base URL (default https://api.up.com.au/api/v1)">
+    </div>
+    <div class="sub">Stored only in this browser's localStorage. Get a token at <a href="https://api.up.com.au/getting_started">api.up.com.au</a>. If requests fail with a network/CORS error, set the base URL to your proxy (see README).</div>
+  </details>
   <div class="controls">
     <input id="since" type="date" aria-label="From">
     <input id="until" type="date" aria-label="To">
@@ -48,27 +57,71 @@
 const $ = id => document.getElementById(id);
 const money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 let all = [];
+const MAX_PAGES = 5;
 
 // Default range: last 30 days
 const d = new Date(); $('until').value = d.toISOString().slice(0, 10);
 d.setDate(d.getDate() - 30); $('since').value = d.toISOString().slice(0, 10);
 
+const DEFAULT_BASE = 'https://api.up.com.au/api/v1';
+const store = {
+  get: k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
+$('token').value = store.get('up_token');
+$('base').value = store.get('up_base');
+if (!$('token').value) $('settings').open = true;
+
+async function upGet(url, token) {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.errors?.[0]?.detail || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
 async function load() {
-  $('status').className = ''; $('status').textContent = 'Loading…';
-  const p = new URLSearchParams({ since: $('since').value, until: $('until').value, pages: 5 });
+  const token = $('token').value.trim();
+  const base = ($('base').value.trim() || DEFAULT_BASE).replace(/\/+$/, '');
+  store.set('up_token', token); store.set('up_base', $('base').value.trim());
+  $('status').className = '';
+  if (!token) { $('status').className = 'error'; $('status').textContent = 'Enter your Up token in Settings.'; return; }
+  $('status').textContent = 'Loading…';
+
+  const q = new URLSearchParams({ 'page[size]': '100' });
+  if ($('since').value) q.set('filter[since]', new Date($('since').value + 'T00:00:00').toISOString());
+  if ($('until').value) q.set('filter[until]', new Date($('until').value + 'T23:59:59').toISOString());
   try {
-    const res = await fetch('/api/transactions?' + p);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-    all = data.transactions;
+    const [accounts, txns] = await Promise.all([
+      upGet(`${base}/accounts`, token),
+      (async () => {
+        const out = []; let url = `${base}/transactions?${q}`;
+        for (let i = 0; i < MAX_PAGES && url; i++) {
+          const page = await upGet(url, token);
+          out.push(...page.data); url = page.links?.next;
+        }
+        return { data: out, more: Boolean(url) };
+      })(),
+    ]);
+    const names = Object.fromEntries(accounts.data.map(a => [a.id, a.attributes.displayName]));
+    all = txns.data.map(t => ({
+      description: t.attributes.description, message: t.attributes.message, status: t.attributes.status,
+      createdAt: t.attributes.createdAt, amount: Number(t.attributes.amount.valueInBaseUnits) / 100,
+      account: names[t.relationships.account.data.id] || 'Unknown',
+      category: t.relationships.category.data?.id || null,
+    }));
     const accts = [...new Set(all.map(t => t.account))].sort();
     const cur = $('account').value;
     $('account').innerHTML = '<option value="">All accounts</option>' + accts.map(a => `<option>${esc(a)}</option>`).join('');
     $('account').value = accts.includes(cur) ? cur : '';
-    $('status').textContent = data.more ? 'Showing the first 500 transactions; narrow the date range for more.' : '';
+    $('status').textContent = txns.more ? 'Showing the first 500 transactions; narrow the date range for more.' : '';
     render();
   } catch (e) {
-    $('status').className = 'error'; $('status').textContent = e.message;
+    $('status').className = 'error';
+    $('status').textContent = e instanceof TypeError
+      ? 'Network/CORS error: the browser could not reach the API. Set an API base URL pointing at a CORS proxy (see README).'
+      : e.message;
   }
 }
 
@@ -92,7 +145,7 @@ function render() {
 
 $('load').onclick = load;
 $('q').oninput = $('account').onchange = render;
-load();
+if ($('token').value) load();
 </script>
 </body>
 </html>
