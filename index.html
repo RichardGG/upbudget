@@ -70,7 +70,7 @@
   <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
   <h2>Regular payments</h2>
   <div class="controls"><button id="findRec">Find regular payments</button></div>
-  <div id="recStatus" class="sub">Scans the last 12 months for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
+  <div id="recStatus" class="sub">Scans the last 2 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
   <table id="recTable" hidden>
     <thead><tr><th>Payee</th><th>Frequency</th><th class="amt">Amount</th><th class="amt">Last paid</th><th class="amt">Next due</th><th class="amt">≈ per month</th></tr></thead>
     <tbody id="recRows"></tbody>
@@ -82,11 +82,12 @@
 const $ = id => document.getElementById(id);
 const money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 let all = [];
-const MAX_PAGES = 5;
+const MAX_PAGES = 100; // 100 transactions per page
+const YEARS = 2;
 
 // Default range: last 30 days
 const d = new Date(); $('until').value = d.toISOString().slice(0, 10);
-d.setDate(d.getDate() - 30); $('since').value = d.toISOString().slice(0, 10);
+d.setFullYear(d.getFullYear() - YEARS); $('since').value = d.toISOString().slice(0, 10);
 
 const DEFAULT_BASE = 'https://api.up.com.au/api/v1';
 const store = {
@@ -162,7 +163,7 @@ async function load() {
     const cur = $('account').value;
     $('account').innerHTML = '<option value="">All accounts</option>' + accts.map(a => `<option>${esc(a)}</option>`).join('');
     $('account').value = accts.includes(cur) ? cur : '';
-    $('status').textContent = more ? 'Showing the first 500 transactions; narrow the date range for more.' : '';
+    $('status').textContent = more ? 'Showing the most recent 10,000 transactions; narrow the date range to see older ones.' : '';
     render(); renderFlow();
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
@@ -220,14 +221,14 @@ async function findRecurring() {
   const auth = getAuth(), el = $('recStatus');
   el.className = 'sub';
   if (!auth.token) { el.className = 'error'; el.textContent = 'Enter your Up token in Settings.'; return; }
-  const since = new Date(); since.setFullYear(since.getFullYear() - 1);
-  el.textContent = 'Loading the last 12 months…';
+  const since = new Date(); since.setFullYear(since.getFullYear() - YEARS);
+  el.textContent = `Loading the last ${YEARS} years…`;
   try {
-    const { list, more } = await fetchTxns(auth, since.toISOString().slice(0, 10), null, 40, n => { el.textContent = `Loading… ${n} transactions`; });
+    const { list, more } = await fetchTxns(auth, since.toISOString().slice(0, 10), null, MAX_PAGES, n => { el.textContent = `Loading… ${n} transactions`; });
     const rows = detectRecurring(list);
     const fmt = d => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
     const active = rows.filter(r => !r.lapsed);
-    el.textContent = `Analysed ${list.length} transactions from the last 12 months${more ? ' (hit the 4,000 limit; older ones are missing)' : ''}. ` +
+    el.textContent = `Analysed ${list.length} transactions from the last ${YEARS} years${more ? ' (hit the 10,000 limit; older ones are missing)' : ''}. ` +
       `Estimated regular spend: ${money(active.reduce((s, r) => s + r.monthly, 0))}/month.`;
     $('recRows').innerHTML = rows.length ? rows.map(r => `<tr class="${r.lapsed ? 'lapsed' : ''}">
       <td>${esc(r.name)}<div class="sub">${esc(r.account)} · ${r.count} payments${r.lapsed ? ' · no recent payment (cancelled?)' : ''}</div></td>

@@ -18,11 +18,11 @@ first) and put the worker URL in the **API base URL** setting (e.g. `https://upp
 
 ## Features
 
-- Last 30 days by default (up to 500 transactions), editable date range
+- Last 2 years by default (up to 10,000 transactions), editable date range
 - Filter by account, search by description/message/category
 - Money in / out / net totals (internal transfers excluded)
 - Money flow diagram: external income → accounts, plus net transfers between accounts
-- Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 12 months, with typical amount, next due date and estimated monthly cost
+- Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 2 years, with typical amount, next due date and estimated monthly cost
 
 ## Local preview
 
