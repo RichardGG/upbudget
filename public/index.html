@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UpBudget</title>
+<style>
+  :root { --bg:#fff; --fg:#1c1c28; --muted:#6b6b80; --line:#e6e6ee; --pos:#0a8f4e; --neg:#c0392b; --accent:#ff7a64; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16161d; --fg:#ececf2; --muted:#9a9ab0; --line:#2c2c3a; --pos:#4cd38b; --neg:#ff7b6b; } }
+  body { margin:0; font:15px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:900px; margin:0 auto; padding:16px; }
+  h1 { margin:0 0 12px; color:var(--accent); }
+  .controls { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  input, select, button { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  input[type=search] { flex:1; min-width:140px; }
+  button { background:var(--accent); color:#fff; border:0; cursor:pointer; }
+  .summary { display:flex; gap:24px; margin-bottom:12px; flex-wrap:wrap; }
+  .summary div span { display:block; color:var(--muted); font-size:12px; }
+  .summary b { font-size:20px; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:8px 4px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .amt { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+  .sub { color:var(--muted); font-size:12px; }
+  #status { color:var(--muted); margin:8px 0; }
+  .error { color:var(--neg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>UpBudget</h1>
+  <div class="controls">
+    <input id="since" type="date" aria-label="From">
+    <input id="until" type="date" aria-label="To">
+    <select id="account" aria-label="Account"><option value="">All accounts</option></select>
+    <input id="q" type="search" placeholder="Search…">
+    <button id="load">Load</button>
+  </div>
+  <div class="summary">
+    <div><span>Money in</span><b id="in" class="pos">–</b></div>
+    <div><span>Money out</span><b id="out" class="neg">–</b></div>
+    <div><span>Net</span><b id="net">–</b></div>
+  </div>
+  <div id="status"></div>
+  <table><tbody id="rows"></tbody></table>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+let all = [];
+
+// Default range: last 30 days
+const d = new Date(); $('until').value = d.toISOString().slice(0, 10);
+d.setDate(d.getDate() - 30); $('since').value = d.toISOString().slice(0, 10);
+
+async function load() {
+  $('status').className = ''; $('status').textContent = 'Loading…';
+  const p = new URLSearchParams({ since: $('since').value, until: $('until').value, pages: 5 });
+  try {
+    const res = await fetch('/api/transactions?' + p);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    all = data.transactions;
+    const accts = [...new Set(all.map(t => t.account))].sort();
+    const cur = $('account').value;
+    $('account').innerHTML = '<option value="">All accounts</option>' + accts.map(a => `<option>${esc(a)}</option>`).join('');
+    $('account').value = accts.includes(cur) ? cur : '';
+    $('status').textContent = data.more ? 'Showing the first 500 transactions; narrow the date range for more.' : '';
+    render();
+  } catch (e) {
+    $('status').className = 'error'; $('status').textContent = e.message;
+  }
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+function render() {
+  const q = $('q').value.toLowerCase(), acct = $('account').value;
+  const list = all.filter(t => (!acct || t.account === acct) &&
+    (!q || `${t.description} ${t.message || ''} ${t.category || ''}`.toLowerCase().includes(q)));
+  // Internal transfers between your own accounts net to zero; exclude from totals.
+  const real = list.filter(t => t.category !== null || !/^(Transfer|Quick save|Round Up|Cover)/i.test(t.description));
+  const inn = real.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const out = real.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
+  $('in').textContent = money(inn); $('out').textContent = money(out);
+  $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
+  $('rows').innerHTML = list.map(t => `<tr>
+    <td>${esc(t.description)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
+      <div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${t.category ? ' · ' + esc(t.category) : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
+}
+
+$('load').onclick = load;
+$('q').oninput = $('account').onchange = render;
+load();
+</script>
+</body>
+</html>
