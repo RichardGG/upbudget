@@ -271,6 +271,9 @@ function buildBalanceSeries(rows, info) {
     for (let d = N - 1; d >= 0; d--) { arr[d] += sign * cur; if (ch) cur -= ch[d]; }   // cur = balance at end of day d
   }
   for (let d = 0; d < N; d++) remaining[d] = Math.max(0, debt[d] - offset[d]);
+  // Nothing before the loan existed counts: cut everything off at the first day the loan balance was above zero
+  const first = debt.findIndex(v => v > 0.005);
+  if (first > 0) return { start: start + first, N: N - first, debt: debt.subarray(first), offset: offset.subarray(first), remaining: remaining.subarray(first) };
   return { start, N, debt, offset, remaining };
 }
 
@@ -312,7 +315,7 @@ function renderBalanceChart(sinceMs, untilMs) {
   const showProj = $('showProj').checked && i1 === todayD && projs.length > 0;
   const finite = projs.filter(p => isFinite(p.daysRem) && p.daysRem > 0).map(p => Math.min(p.daysRem, MAX_PROJ_DAYS));
   const iEnd = showProj && finite.length ? todayD + Math.ceil(Math.max(...finite) * 1.03) : i1;   // x-axis runs on into the future
-  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}); the left of "today" is history, dashed lines are projections.`;
+  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}, when the loan balance first rose above $0); the left of "today" is history, dashed lines are projections.`;
 
   // Payoff table
   $('projBox').hidden = !projs.length;
