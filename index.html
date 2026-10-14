@@ -68,6 +68,7 @@
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
+  .catbtn { background:none; border:0; color:var(--accent); padding:0; cursor:pointer; font-size:12px; }
   #vClose, #cClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
   .vall { font-weight:600; margin-top:6px; } .vlist { overflow:auto; border-top:1px solid var(--line); }
   .vlist tr.hl td { background:var(--line); }
@@ -162,9 +163,18 @@
 <dialog id="vendorDlg">
   <div class="dhead"><h3 id="vTitle"></h3><button id="vClose" aria-label="Close">×</button></div>
   <div id="vSummary" class="sub"></div>
+  <label class="sub">Category for every transaction from this vendor: <select id="vCat"></select></label>
   <label class="vall"><input type="checkbox" id="vAll"> Every payment to this vendor is a regular</label>
   <div class="sub">Or tick individual transactions below.</div>
   <div class="vlist"><table><tbody id="vRows"></tbody></table></div>
+</dialog>
+<dialog id="catDlg">
+  <form id="catForm" method="dialog" style="display:flex;flex-direction:column;gap:8px">
+    <h3 style="margin:0">New category</h3>
+    <input id="ncName" placeholder="Name, e.g. Pets" required maxlength="40">
+    <label class="sub">Group it under: <select id="ncParent"></select></label>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" id="ncCancel" style="background:none;color:var(--muted)">Cancel</button><button type="submit">Create</button></div>
+  </form>
 </dialog>
 </main>
 <script>
@@ -581,8 +591,10 @@ function openVendor(key, highlightId) {
   $('vAll').checked = whole; $('vAll').dataset.key = key;
   $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}">
     <td><input type="checkbox" data-id="${esc(t.id)}" aria-label="Regular on ${new Date(t.createdAt).toLocaleDateString('en-AU')}" ${whole || regularIds.has(t.id) ? 'checked' : ''} ${whole ? 'disabled' : ''}></td>
-    <td>${new Date(t.createdAt).toLocaleDateString('en-AU')}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+    <td>${new Date(t.createdAt).toLocaleDateString('en-AU')}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${esc(effCat(t) ? catName(effCat(t)) : 'Uncategorised')}${catStore.txns[t.id] !== undefined ? '*' : ''} ✎</button></div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
+  $('vCat').innerHTML = catOptions(catStore.vendors[key] ?? '', `Up's category`);
+  $('vCat').dataset.key = key;
   if (!dlg.open) dlg.showModal();
   const hl = $('vRows').querySelector('.hl'); if (hl) hl.scrollIntoView({ block: 'center' });
 }
@@ -608,6 +620,60 @@ $('regChips').onclick = e => {
   saveRegulars();
 };
 
+// ---- Custom categories (stored in this browser only; Up itself is never changed) ----
+let catStore = { vendors: {}, txns: {}, custom: {} };   // vendors: vendorKey → categoryId, txns: id → categoryId (wins over vendor)
+const effCat = t => catStore.txns[t.id] ?? catStore.vendors[vendorKey(t)] ?? t.category;
+const isCatOverridden = t => catStore.txns[t.id] !== undefined || catStore.vendors[vendorKey(t)] !== undefined;
+const saveCats = () => {
+  try { localStorage.setItem(regKey + '_cats', JSON.stringify(catStore)); } catch {}
+  renderCycles(); render(); renderChips();
+  if ($('vendorDlg').open) openVendor($('vAll').dataset.key);
+};
+
+// <option>s grouped under their parent category; custom top-level categories get their own group
+function catOptions(selected, defaultLabel) {
+  const groups = {};
+  for (const [id, c] of Object.entries({ ...lastCategories, ...catStore.custom })) {
+    if (!c.parent && !catStore.custom[id]) continue;           // Up's top-level groups aren't assignable
+    (groups[c.parent ? catName(c.parent) : 'Custom'] ||= []).push([id, c.name]);
+  }
+  const opt = ([id, name]) => `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(name)}</option>`;
+  return `<option value="">${esc(defaultLabel)}</option>` +
+    Object.keys(groups).sort().map(g => `<optgroup label="${esc(g)}">${groups[g].sort((a, b) => a[1].localeCompare(b[1])).map(opt).join('')}</optgroup>`).join('') +
+    '<option value="__new">+ New category…</option>';
+}
+
+let newCatTarget = null;
+function applyCat(target, id) {
+  if (target.type === 'vendor') { if (id) catStore.vendors[target.key] = id; else delete catStore.vendors[target.key]; }
+  else if (id) catStore.txns[target.id] = id; else delete catStore.txns[target.id];
+  saveCats();
+}
+function chooseCat(target, value) {
+  if (value !== '__new') return applyCat(target, value);
+  newCatTarget = target;
+  $('ncName').value = '';
+  $('ncParent').innerHTML = '<option value="">None (own group)</option>' + Object.entries(lastCategories).filter(([, c]) => !c.parent).map(([id, c]) => `<option value="${esc(id)}">${esc(c.name)}</option>`).join('');
+  $('catDlg').showModal(); $('ncName').focus();
+}
+$('ncCancel').onclick = () => { $('catDlg').close(); if ($('vendorDlg').open) openVendor($('vAll').dataset.key); };
+$('catForm').onsubmit = e => {
+  e.preventDefault();
+  const name = $('ncName').value.trim(); if (!name) return;
+  const id = 'custom:' + name.toLowerCase().replace(/\W+/g, '-');
+  catStore.custom[id] = { name, parent: $('ncParent').value || null };
+  $('catDlg').close(); applyCat(newCatTarget, id);
+};
+$('vCat').onchange = e => chooseCat({ type: 'vendor', key: e.target.dataset.key }, e.target.value);
+$('vRows').addEventListener('click', e => {      // swap the category label for a picker
+  const b = e.target.closest('button[data-cattx]'); if (!b) return;
+  const t = lastRows.find(x => x.id === b.dataset.cattx), sel = document.createElement('select');
+  sel.innerHTML = catOptions(catStore.txns[t.id] ?? '', 'Same as vendor / Up'); sel.dataset.cattxsel = t.id;
+  b.replaceWith(sel); sel.focus();
+  sel.onchange = () => chooseCat({ type: 'txn', id: t.id }, sel.value);
+  sel.onblur = () => { if (document.contains(sel)) openVendor($('vAll').dataset.key); };
+});
+
 // ---- Pay cycles ----
 // The salary is the recurring income payee with the highest monthly total (override via the dropdown).
 function findSalaryCandidates(rows) {
@@ -631,14 +697,15 @@ function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
     const d = dayIdx(Date.parse(t.createdAt));
     if (d < first) continue;
     const c = cycles.find(c => d >= c.start && d < c.end); if (!c) continue;
-    const g = isRegular(t) ? 'R:' + t.description : 'C:' + (t.category || '');
+    const g = isRegular(t) ? 'R:' + t.description : 'C:' + (effCat(t) || '');
     c.groups[g] = (c.groups[g] || 0) + -t.amount; c.total += -t.amount; c.items.push({ t, g });
   }
   return cycles;
 }
 
-const catName = id => id ? (lastCategories[id]?.name || id) : 'Uncategorised';
-const parentOf = id => (id && lastCategories[id]?.parent) || id || '';
+const catLookup = id => catStore.custom[id] || lastCategories[id];
+const catName = id => id ? (catLookup(id)?.name || id) : 'Uncategorised';
+const parentOf = id => (id && catLookup(id)?.parent) || id || '';
 const cycleLabel = c => new Date(c.start * DAY).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const CAT_COLORS = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8'];
 
@@ -752,7 +819,7 @@ function openCycleTxns(spec, ci) {
   $('cTitle').textContent = labelFor(spec);
   $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
     ` · ${items.length} transaction${items.length === 1 ? '' : 's'} · ${money(total)}`;
-  $('cRows').innerHTML = items.map(t => `<tr class="tap" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}<div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${t.category ? ' · ' + esc(catName(t.category)) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
+  $('cRows').innerHTML = items.map(t => `<tr class="tap" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}<div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
   if (!$('cycleDlg').open) $('cycleDlg').showModal();
 }
 $('cycleRows').onclick = e => { const td = e.target.closest('td[data-spec]'); if (td) openCycleTxns(td.dataset.spec, td.dataset.c); };
@@ -824,6 +891,7 @@ async function ensureRegulars(auth) {
   if (k !== regKey) {
     regKey = k; regulars = loadRegulars();
     try { regularIds = new Set(JSON.parse(localStorage.getItem(k + '_ids') || '[]')); } catch { regularIds = new Set(); }
+    try { catStore = { vendors: {}, txns: {}, custom: {}, ...JSON.parse(localStorage.getItem(k + '_cats') || '{}') }; } catch { catStore = { vendors: {}, txns: {}, custom: {} }; }
   }
 }
 
@@ -947,7 +1015,7 @@ function renderFlow() {
 function render() {
   const q = $('q').value.toLowerCase(), acct = $('account').value;
   const list = all.filter(t => (!acct || t.account === acct) &&
-    (!q || `${t.description} ${t.message || ''} ${t.category || ''}`.toLowerCase().includes(q)));
+    (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
   const inn = real.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
@@ -956,7 +1024,7 @@ function render() {
   $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
   $('rows').innerHTML = list.map(t => `<tr class="tap" data-id="${esc(t.id)}">
     <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${t.category ? ' · ' + esc(t.category) : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+      <div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
 }
 

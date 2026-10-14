@@ -33,6 +33,7 @@ history you newly ask for. Use **Clear cache & reload** to refetch everything. N
 - Money flow diagram: external income → accounts, plus net transfers between accounts
 - Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 10 years, with typical amount, next due date and estimated monthly cost
 - Spending per pay cycle: detects your salary, then shows spending per pay cycle by category (confirmed regulars grouped separately), as a stacked chart and a table
+- Custom categories: set a category for a whole vendor or a single transaction (or create new ones); stored in your browser only, Up is not changed
   - Tap any amount in the table (or a chart segment) to see the transactions behind it
   - Tick the payees that really are regular; choices are saved in your browser and can be filtered with "Confirmed only"
   - Tap any transaction to see that vendor's earlier transactions and mark the whole vendor, or individual payments, as regular
