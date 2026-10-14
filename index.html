@@ -299,14 +299,7 @@ function netError(e) {
     : e.message;
 }
 
-// ---- Cache (IndexedDB, one database per token; falls back to memory) ----
-async function tokenKey(token) {
-  try {
-    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    return [...new Uint8Array(h)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
-  } catch { let h = 0; for (const c of token) h = (h * 31 + c.charCodeAt(0)) | 0; return String(h >>> 0); }
-}
-
+// ---- Cache (IndexedDB, one database per browser; falls back to memory) ----
 function memoryCache() {
   const txns = new Map(), meta = new Map();
   return {
@@ -343,20 +336,20 @@ function idbCache(db) {
   };
 }
 
-const caches = {};
-async function getCache(token) {
-  const key = await tokenKey(token);
-  if (caches[key]) return caches[key];
-  let c;
-  try {
-    const db = await new Promise((res, rej) => {
-      const r = indexedDB.open('upbudget-' + key, 1);
-      r.onupgradeneeded = () => { r.result.createObjectStore('txns', { keyPath: 'id' }); r.result.createObjectStore('meta'); };
-      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-    });
-    c = idbCache(db);
-  } catch { c = memoryCache(); }
-  return (caches[key] = c);
+let cachePromise = null;
+function getCache() {
+  return cachePromise ||= (async () => {
+    try {
+      const db = await new Promise((res, rej) => {
+        const r = indexedDB.open('upbudget', 1);
+        r.onupgradeneeded = () => { r.result.createObjectStore('txns', { keyPath: 'id' }); r.result.createObjectStore('meta'); };
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      });
+      // Older versions kept one database per token ("upbudget-<hash>"); drop them (the data is refetched into the new one)
+      try { indexedDB.databases && indexedDB.databases().then(ds => ds.forEach(d => /^upbudget-/.test(d.name) && indexedDB.deleteDatabase(d.name))); } catch {}
+      return idbCache(db);
+    } catch { return memoryCache(); }
+  })();
 }
 
 // ---- API ----
@@ -585,7 +578,7 @@ const DAY = 864e5, OVERLAP = 14 * DAY; // re-fetch recent days so held/pending t
 
 // Bring the cache up to date and make sure it reaches back to wantSinceMs. Only fetches what's missing.
 async function sync(auth, wantSinceMs, { force = false, onProgress } = {}) {
-  const c = await getCache(auth.token);
+  const c = await getCache();
   const prevMeta = await c.getMeta('meta');
   if (force || (prevMeta && prevMeta.schema !== SCHEMA)) await c.clear();   // schema bump: cached rows from before tags existed are refetched once
   const accountInfo = await fetchAccounts(auth);
@@ -649,7 +642,7 @@ async function load(force = false) {
     $('account').value = accts.includes(cur) ? cur : '';
     $('status').textContent = '';
     showCacheInfo(rows, meta, added);
-    await ensureRegulars(auth);
+    await ensureRegulars();
     refreshFilterOptions();
     render(); renderFlow(); renderSpendFlow(); renderBalanceChart(since, until); renderCycles(auth); renderChips();
   } catch (e) {
@@ -903,7 +896,7 @@ function paydayList(rows, salaryKey) {
 // The chosen salary (dropdown choice, else the top candidate) and its paydays, memoised so typing in search stays fast
 let payMemo = null;
 function currentPaydays() {
-  const saved = (() => { try { return localStorage.getItem('up_salary_' + regKey) || ''; } catch { return ''; } })();
+  const saved = (() => { try { return localStorage.getItem('up_salary') || ''; } catch { return ''; } })();
   if (payMemo && payMemo.rows === lastRows && payMemo.saved === saved) return payMemo.paydays;
   const cands = findSalaryCandidates(lastRows), key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
   payMemo = { rows: lastRows, saved, key, paydays: key ? paydayList(lastRows, key) : [] };
@@ -953,7 +946,7 @@ const CAT_COLORS = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c
 function renderCycles(auth) {
   const sec = $('cycleSection');
   const cands = findSalaryCandidates(lastRows);
-  const saved = (() => { try { return localStorage.getItem('up_salary_' + regKey) || ''; } catch { return ''; } })();
+  const saved = (() => { try { return localStorage.getItem('up_salary') || ''; } catch { return ''; } })();
   const key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
   $('salarySel').innerHTML = cands.map(c => `<option value="${esc(c.key)}" ${c.key === key ? 'selected' : ''}>${esc(c.name)} (${c.freq.toLowerCase()}, ~${money(c.amount)})</option>`).join('');
   if (!key) { $('cycleMsg').textContent = 'No regular salary found yet (needs a weekly, fortnightly or monthly deposit at least 3 times in the last 2 years).'; $('cycleBody').hidden = true; return; }
@@ -1130,7 +1123,7 @@ function detectRecurring(txns, now = new Date(), income = false) {
 }
 
 // Which detected payees the user has confirmed as regular (persisted per token; survives cache clears)
-let recRows = [], regulars = new Set(), regKey = null, regularIds = new Set();
+let recRows = [], regulars = new Set(), regKey = 'up_regulars', regularIds = new Set(), storesLoaded = false;
 const vendorKey = t => t.description.trim().toUpperCase();
 const isRegular = t => regulars.has(vendorKey(t)) || regularIds.has(t.id);
 const loadRegulars = () => { try { return new Set(JSON.parse(localStorage.getItem(regKey) || '[]')); } catch { return new Set(); } };
@@ -1138,13 +1131,34 @@ const saveRegulars = () => {
   try { localStorage.setItem(regKey, JSON.stringify([...regulars])); localStorage.setItem(regKey + '_ids', JSON.stringify([...regularIds])); } catch {}
   renderCycles(); renderChips(); if (recRows.length) renderRecurring(); render();
 };
-async function ensureRegulars(auth) {
-  const k = 'up_regulars_' + await tokenKey(auth.token);
-  if (k !== regKey) {
-    regKey = k; regulars = loadRegulars();
-    try { regularIds = new Set(JSON.parse(localStorage.getItem(k + '_ids') || '[]')); } catch { regularIds = new Set(); }
-    try { catStore = { vendors: {}, txns: {}, custom: {}, ...JSON.parse(localStorage.getItem(k + '_cats') || '{}') }; } catch { catStore = { vendors: {}, txns: {}, custom: {} }; }
-  }
+// Earlier versions suffixed these keys with a hash of the token; fold any such keys into the plain ones
+function migrateHashedKeys() {
+  try {
+    const OLD = /^up_regulars_[0-9a-f]+(_ids|_cats)?$|^up_salary_up_regulars_[0-9a-f]+$/;
+    const olds = []; for (let i = 0; i < localStorage.length; i++) if (OLD.test(localStorage.key(i))) olds.push(localStorage.key(i));
+    if (!olds.length) return;
+    const read = k => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } };
+    const reg = new Set(read('up_regulars') || []), ids = new Set(read('up_regulars_ids') || []);
+    const cats = { vendors: {}, txns: {}, custom: {}, ...(read('up_regulars_cats') || {}) };
+    let salary = localStorage.getItem('up_salary');
+    for (const k of olds) {
+      if (k.startsWith('up_salary_')) salary ||= localStorage.getItem(k);
+      else if (k.endsWith('_ids')) (read(k) || []).forEach(x => ids.add(x));
+      else if (k.endsWith('_cats')) { const c = read(k) || {}; Object.assign(cats.vendors, c.vendors); Object.assign(cats.txns, c.txns); Object.assign(cats.custom, c.custom); }
+      else (read(k) || []).forEach(x => reg.add(x));
+    }
+    localStorage.setItem('up_regulars', JSON.stringify([...reg])); localStorage.setItem('up_regulars_ids', JSON.stringify([...ids]));
+    localStorage.setItem('up_regulars_cats', JSON.stringify(cats)); if (salary) localStorage.setItem('up_salary', salary);
+    olds.forEach(k => localStorage.removeItem(k));
+  } catch {}
+}
+
+async function ensureRegulars() {
+  if (storesLoaded) return;
+  storesLoaded = true; migrateHashedKeys();
+  regulars = loadRegulars();
+  try { regularIds = new Set(JSON.parse(localStorage.getItem(regKey + '_ids') || '[]')); } catch { regularIds = new Set(); }
+  try { catStore = { vendors: {}, txns: {}, custom: {}, ...JSON.parse(localStorage.getItem(regKey + '_cats') || '{}') }; } catch { catStore = { vendors: {}, txns: {}, custom: {} }; }
 }
 
 function renderRecurring() {
@@ -1179,8 +1193,7 @@ async function findRecurring() {
     const { rows: cached, meta, added } = await sync(auth, since.getTime(), { onProgress: n => { el.textContent = `Loading… ${n} transactions`; } });
     showCacheInfo(cached, meta, added);
     const list = cached.filter(t => Date.parse(t.createdAt) >= since.getTime());
-    regKey = 'up_regulars_' + await tokenKey(auth.token);
-    regulars = loadRegulars();
+    await ensureRegulars();
     recRows = detectRecurring(list);
     el.textContent = `Analysed ${list.length} transactions from the last ${YEARS} years${meta.truncated ? ` (hit the ${(MAX_PAGES * 100).toLocaleString()} limit; older ones are missing)` : ''}. Tick the ones that really are regular.`;
     renderRecurring();
@@ -1436,7 +1449,7 @@ $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
 $('sfTop').onchange = $('sfSubs').onchange = () => renderSpendFlow();
-$('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); render(); };
+$('salarySel').onchange = e => { try { localStorage.setItem('up_salary', e.target.value); } catch {} renderCycles(); render(); };
 try { $('cycleHideReg').checked = localStorage.getItem('up_hide_regulars') === '1'; } catch {}
 $('cycleHideReg').onchange = () => { try { localStorage.setItem('up_hide_regulars', $('cycleHideReg').checked ? '1' : '0'); } catch {} renderCycles(); };
 $('cycleN').onchange = $('cycleSubs').onchange = () => renderCycles();

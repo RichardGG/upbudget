@@ -18,7 +18,7 @@ first) and put the worker URL in the **API base URL** setting (e.g. `https://upp
 
 ## Caching
 
-Transactions are cached in the browser (IndexedDB, one cache per token), so the first load pulls the full
+Transactions are cached in the browser (IndexedDB), so the first load pulls the full
 history and later loads only fetch the last 14 days (to pick up pending transactions settling), plus any older
 history you newly ask for. Use **Clear cache & reload** to refetch everything. Nothing leaves your browser.
 
