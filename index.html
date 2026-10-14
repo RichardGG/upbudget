@@ -61,6 +61,11 @@
   table.cyc tr.tot td { border-top:2px solid var(--line); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
+  tr.lunch td { background:var(--lunch); }
+  tr.lunch.tap:hover td { background:var(--line); }
+  .lunch-tag { background:var(--lunchtag); color:#1c1c28; }
+  :root { --lunch:rgba(237,161,0,.16); --lunchtag:#eda100; }
+  @media (prefers-color-scheme: dark) { :root { --lunch:rgba(201,133,0,.22); --lunchtag:#c98500; } }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
   .chip { display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
   .chip button { background:none; color:var(--fg); border:0; padding:4px 10px; cursor:pointer; font-size:12px; } .chip button + button { padding:4px 8px; color:var(--muted); border-left:1px solid var(--line); }
@@ -570,6 +575,15 @@ async function load(force = false) {
   }
 }
 
+// ---- Time of day (Sydney/Melbourne time: AEST, or AEDT during daylight saving) ----
+const TZ = 'Australia/Sydney';
+const whenFmt = new Intl.DateTimeFormat('en-AU', { timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+const hourFmt = new Intl.DateTimeFormat('en-AU', { timeZone: TZ, hour: 'numeric', hourCycle: 'h23' });
+const when = t => whenFmt.format(new Date(t.createdAt)).replace(',', '');
+// A lunch-time purchase: money out (not a transfer) created from 11:00am up to 1:00pm
+const isLunch = t => t.amount < 0 && !t.isTransfer && [11, 12].includes(Number(hourFmt.format(new Date(t.createdAt))));
+const lunchTag = t => isLunch(t) ? ' <span class="tag lunch-tag">lunch</span>' : '';
+
 // ---- Manually marking regulars: tap a transaction to see the vendor's history ----
 function renderChips() {
   const el = $('regChips'), name = k => (lastRows.find(t => vendorKey(t) === k) || {}).description || k;
@@ -589,9 +603,9 @@ function openVendor(key, highlightId) {
   $('vTitle').textContent = items[0].description;
   $('vSummary').textContent = `${items.length} transaction${items.length === 1 ? '' : 's'} · net ${money(total)} · ${new Date(items[items.length - 1].createdAt).toLocaleDateString('en-AU')} to ${new Date(items[0].createdAt).toLocaleDateString('en-AU')}`;
   $('vAll').checked = whole; $('vAll').dataset.key = key;
-  $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}">
+  $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}${isLunch(t) ? ' lunch' : ''}">
     <td><input type="checkbox" data-id="${esc(t.id)}" aria-label="Regular on ${new Date(t.createdAt).toLocaleDateString('en-AU')}" ${whole || regularIds.has(t.id) ? 'checked' : ''} ${whole ? 'disabled' : ''}></td>
-    <td>${new Date(t.createdAt).toLocaleDateString('en-AU')}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${esc(effCat(t) ? catName(effCat(t)) : 'Uncategorised')}${catStore.txns[t.id] !== undefined ? '*' : ''} ✎</button></div></td>
+    <td>${when(t)}${lunchTag(t)}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${esc(effCat(t) ? catName(effCat(t)) : 'Uncategorised')}${catStore.txns[t.id] !== undefined ? '*' : ''} ✎</button></div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
   $('vCat').innerHTML = catOptions(catStore.vendors[key] ?? '', `Up's category`);
   $('vCat').dataset.key = key;
@@ -819,7 +833,7 @@ function openCycleTxns(spec, ci) {
   $('cTitle').textContent = labelFor(spec);
   $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
     ` · ${items.length} transaction${items.length === 1 ? '' : 's'} · ${money(total)}`;
-  $('cRows').innerHTML = items.map(t => `<tr class="tap" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}<div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
+  $('cRows').innerHTML = items.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}<div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
   if (!$('cycleDlg').open) $('cycleDlg').showModal();
 }
 $('cycleRows').onclick = e => { const td = e.target.closest('td[data-spec]'); if (td) openCycleTxns(td.dataset.spec, td.dataset.c); };
@@ -1022,9 +1036,9 @@ function render() {
   const out = real.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
   $('in').textContent = money(inn); $('out').textContent = money(out);
   $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
-  $('rows').innerHTML = list.map(t => `<tr class="tap" data-id="${esc(t.id)}">
-    <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+  $('rows').innerHTML = list.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
+    <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
+      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
 }
 

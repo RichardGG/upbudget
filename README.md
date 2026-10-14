@@ -31,6 +31,7 @@ history you newly ask for. Use **Clear cache & reload** to refetch everything. N
   - Graph of loan balance, offset balance and debt remaining over time (rebuilt from transaction history; hover or use arrow keys for values, table view below)
   - Payoff projections (last 3 months, last 12 months and all-history pace) shown as dashed lines with estimated payoff dates
 - Money flow diagram: external income → accounts, plus net transfers between accounts
+- Transaction times (Sydney/Melbourne time) and a highlight on lunch-time purchases (11am-1pm)
 - Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 10 years, with typical amount, next due date and estimated monthly cost
 - Spending per pay cycle: detects your salary, then shows spending per pay cycle by category (confirmed regulars grouped separately), as a stacked chart and a table
 - Custom categories: set a category for a whole vendor or a single transaction (or create new ones); stored in your browser only, Up is not changed
