@@ -63,6 +63,7 @@
   .scale { display:flex; align-items:center; gap:6px; margin:4px 0; } .grad { display:inline-block; width:120px; height:10px; border-radius:5px; border:1px solid var(--line); background:linear-gradient(90deg, color-mix(in srgb, var(--cold) 45%, transparent), transparent, color-mix(in srgb, var(--hot) 45%, transparent)); }
   table.cyc tr.memo td { font-style:italic; border-top:1px dashed var(--line); } table.cyc tr.memo td:first-child { color:var(--muted); }
   table.cyc tr.tot td { border-top:2px solid var(--line); }
+  tr.gh { cursor:pointer; } tr.gh td { background:var(--line); font-weight:600; position:sticky; top:0; z-index:1; } tr.gh .sub { font-weight:400; } .chev { display:inline-block; width:1em; color:var(--muted); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
   tr.lunch td { background:var(--lunch); }
@@ -109,6 +110,7 @@
     <input id="until" type="date" aria-label="To">
     <select id="account" aria-label="Account"><option value="">All accounts</option></select>
     <input id="q" type="search" placeholder="Search…">
+    <label class="sub" style="align-self:center"><input type="checkbox" id="regOnly"> Regulars only</label>
     <button id="load">Load</button>
   </div>
   <div class="sub" style="margin-bottom:12px"><span id="cacheInfo">Nothing cached yet.</span> <a href="#" id="clearCache">Clear cache &amp; reload</a></div>
@@ -181,6 +183,7 @@
     <div style="overflow-x:auto"><table class="cyc"><thead id="cycleHead"></thead><tbody id="cycleRows"></tbody></table></div>
   </div>
   <h2>Transactions</h2>
+  <div class="sub" style="margin-bottom:4px">Grouped by pay cycle. <a href="#" id="expandAll">Expand all</a> · <a href="#" id="collapseAll">Collapse all</a></div>
   <table><tbody id="rows"></tbody></table>
 <dialog id="cycleDlg">
   <div class="dhead"><h3 id="cTitle"></h3><button id="cClose" aria-label="Close">×</button></div>
@@ -635,7 +638,11 @@ function openVendor(key, highlightId) {
   const hl = $('vRows').querySelector('.hl'); if (hl) hl.scrollIntoView({ block: 'center' });
 }
 
-$('rows').onclick = e => { const tr = e.target.closest('tr[data-id]'); const t = tr && lastRows.find(x => x.id === tr.dataset.id); if (t) openVendor(vendorKey(t), t.id); };
+$('rows').onclick = e => {
+  const gh = e.target.closest('tr[data-g]');
+  if (gh) { const k = gh.dataset.g; groupOpen.set(k, gh.getAttribute('aria-expanded') !== 'true'); return render(); }
+  const tr = e.target.closest('tr[data-id]'); const t = tr && lastRows.find(x => x.id === tr.dataset.id); if (t) openVendor(vendorKey(t), t.id);
+};
 $('vClose').onclick = () => $('vendorDlg').close();
 $('vendorDlg').onclick = e => { if (e.target === $('vendorDlg')) $('vendorDlg').close(); };   // click on the backdrop
 $('vAll').onchange = e => {
@@ -826,10 +833,27 @@ function findSalaryCandidates(rows) {
     .filter(r => ['Weekly', 'Fortnightly', 'Monthly'].includes(r.freq)).sort((a, b) => b.monthly - a.monthly);
 }
 
-function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
+// Days (day index) on which the salary landed; small off-cycle top-ups from the same payer don't count
+function paydayList(rows, salaryKey) {
   const sal = rows.filter(t => t.amount > 0 && !t.isTransfer && t.status !== 'HELD' && t.description.trim().toUpperCase() === salaryKey);
   if (!sal.length) return [];
-  const typical = median(sal.map(t => t.amount)), paydays = [...new Set(sal.filter(t => t.amount >= typical * 0.5).map(t => dayIdx(Date.parse(t.createdAt))))].sort((a, b) => a - b);
+  const typical = median(sal.map(t => t.amount));
+  return [...new Set(sal.filter(t => t.amount >= typical * 0.5).map(t => dayIdx(Date.parse(t.createdAt))))].sort((a, b) => a - b);
+}
+
+// The chosen salary (dropdown choice, else the top candidate) and its paydays, memoised so typing in search stays fast
+let payMemo = null;
+function currentPaydays() {
+  const saved = (() => { try { return localStorage.getItem('up_salary_' + regKey) || ''; } catch { return ''; } })();
+  if (payMemo && payMemo.rows === lastRows && payMemo.saved === saved) return payMemo.paydays;
+  const cands = findSalaryCandidates(lastRows), key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
+  payMemo = { rows: lastRows, saved, paydays: key ? paydayList(lastRows, key) : [] };
+  return payMemo.paydays;
+}
+
+function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
+  const paydays = paydayList(rows, salaryKey);
+  if (!paydays.length) return [];
   const today = dayIdx(Date.now());
   let cycles = paydays.map((d, i) => ({ start: d, end: i + 1 < paydays.length ? paydays[i + 1] : Math.max(today + 1, d + 1), inProgress: i + 1 === paydays.length, groups: {}, items: [], total: 0 }));
   cycles = cycles.slice(-nCycles);
@@ -1167,9 +1191,17 @@ function renderFlow() {
   svg.innerHTML = out;
 }
 
+// Transactions are grouped by pay cycle (calendar months if no salary is found) and only expanded groups are drawn
+const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
+let groupKeys = [];
+const txRow = t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
+    <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
+      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`;
+
 function render() {
-  const q = $('q').value.toLowerCase(), acct = $('account').value;
-  const list = all.filter(t => (!acct || t.account === acct) &&
+  const q = $('q').value.toLowerCase(), acct = $('account').value, regOnly = $('regOnly').checked;
+  const list = all.filter(t => (!acct || t.account === acct) && (!regOnly || isRegular(t)) &&
     (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
@@ -1177,17 +1209,42 @@ function render() {
   const out = real.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
   $('in').textContent = money(inn); $('out').textContent = money(out);
   $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
-  $('rows').innerHTML = list.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
-    <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
-    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
+
+  // Bucket each transaction (list is newest first) into the pay cycle it falls in
+  const paydays = currentPaydays(), today = dayIdx(Date.now());
+  const fmt = d => new Date(d * DAY).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const groups = new Map();
+  const bucket = t => {
+    const d = dayIdx(Date.parse(t.createdAt));
+    if (!paydays.length) { const m = new Date(d * DAY); return { key: 'm' + m.getUTCFullYear() + '-' + m.getUTCMonth(), label: m.toLocaleDateString('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' }) }; }
+    let lo = 0, hi = paydays.length - 1, i = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (paydays[mid] <= d) { i = mid; lo = mid + 1; } else hi = mid - 1; }
+    if (i < 0) return { key: 'early', label: 'Before your first pay cycle' };
+    const end = i + 1 < paydays.length ? paydays[i + 1] - 1 : null;
+    return { key: 'p' + paydays[i], label: `${fmt(paydays[i])} – ${end === null ? 'now' : fmt(end)}${end === null ? ' (current pay cycle)' : ''}` };
+  };
+  for (const t of list) {
+    const { key, label } = bucket(t);
+    let g = groups.get(key); if (!g) groups.set(key, g = { key, label, items: [], spent: 0 });
+    g.items.push(t); if (t.amount < 0 && !t.isTransfer) g.spent -= t.amount;
+  }
+  groupKeys = [...groups.keys()];
+  const filtering = Boolean(q || regOnly);
+  let html = '', first = true;
+  for (const g of groups.values()) {
+    const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first);
+    first = false;
+    html += `<tr class="gh" data-g="${esc(g.key)}" aria-expanded="${open}"><td><span class="chev">${open ? '▾' : '▸'}</span> ${esc(g.label)}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}</div></td><td class="amt neg">${g.spent ? money(-g.spent) : ''}<div class="sub">spent</div></td></tr>`;
+    if (open) html += g.items.map(txRow).join('');
+  }
+  $('rows').innerHTML = html || '<tr><td class="sub">No transactions match.</td></tr>';
 }
 
 $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
 $('sfTop').onchange = $('sfSubs').onchange = () => renderSpendFlow();
-$('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); };
+$('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); render(); };
 try { $('cycleHideReg').checked = localStorage.getItem('up_hide_regulars') === '1'; } catch {}
 $('cycleHideReg').onchange = () => { try { localStorage.setItem('up_hide_regulars', $('cycleHideReg').checked ? '1' : '0'); } catch {} renderCycles(); };
 $('cycleN').onchange = $('cycleSubs').onchange = () => renderCycles();
@@ -1203,7 +1260,9 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
   const shown = $('recOnly').checked ? recRows.filter(r => regulars.has(r.key)) : recRows;
   shown.forEach(r => e.target.checked ? regulars.add(r.key) : regulars.delete(r.key)); saveRegulars(); renderRecurring();
 };
-$('q').oninput = $('account').onchange = render;
+$('q').oninput = $('account').onchange = $('regOnly').onchange = render;
+$('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); render(); };
+$('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); render(); };
 if ($('token').value) load();
 </script>
 </body>
