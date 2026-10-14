@@ -85,12 +85,20 @@
   .tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   [role="tabpanel"][hidden] { display:none; }
   .tipf { position:fixed; }
-  #catFilterChip { display:inline-flex; font-size:12px; } #catFilterChip[hidden] { display:none; } #catFilterClear { background:none; color:var(--muted); border:0; padding:0 2px; cursor:pointer; font-size:16px; }
   .brk i { cursor:pointer; } .brk:hover i { opacity:.6; } .brk i:hover, .brk i:focus-visible { opacity:1; } .brk i.dim { opacity:.3; } .brk i:focus-visible { outline:2px solid var(--fg); outline-offset:-2px; }
   tr.sh td { padding-left:26px; font-size:13px; background:color-mix(in srgb, var(--line) 40%, transparent); border-bottom:1px solid var(--line); cursor:pointer; }
   tr.sh td:first-child { padding-left:22px; } tr.sh .amt { font-weight:600; }
   #rows.nested tr.tap td:first-child { padding-left:46px; }
   .sbar { margin:4px 0 0 20px; max-width:calc(100% - 20px); }
+  .utag { display:inline-block; border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:11px; line-height:16px; color:var(--muted); white-space:nowrap; }
+  .ms { position:relative; align-self:center; } .ms[hidden] { display:none; }
+  .msbtn { background:none; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:14px; cursor:pointer; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .msbtn.on { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .mspop { position:absolute; top:calc(100% + 4px); left:0; z-index:20; background:var(--bg); border:1px solid var(--line); border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.18); min-width:240px; max-width:min(340px, calc(100vw - 16px)); padding:6px; }
+  .mspop[hidden] { display:none; } .mspop input[type=search] { width:100%; box-sizing:border-box; margin-bottom:4px; }
+  .mslist { max-height:260px; overflow:auto; } .msopt { display:flex; align-items:center; gap:8px; padding:5px 6px; border-radius:6px; cursor:pointer; font-size:13px; } .msopt:hover { background:var(--line); }
+  .mslab { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .msfoot { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; text-align:right; } .msclear { background:none; color:var(--muted); border:0; cursor:pointer; font-size:13px; }
   .ghrow { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
   .brk { display:flex; gap:1px; height:6px; border-radius:3px; overflow:hidden; margin-top:6px; } .brk i { display:block; height:100%; }
   .share { height:3px; margin-top:5px; max-width:100%; } .share i { display:block; height:100%; border-radius:2px; background:hsl(var(--h, 220) 62% 52%); }
@@ -150,7 +158,8 @@
       <label class="sub" style="align-self:center"><input type="checkbox" id="nestCat"> Nest by category</label>
       <label class="sub" style="align-self:center"><input type="checkbox" id="hideXfer"> Hide transfers &amp; salary</label>
       <select id="regMode" aria-label="Regular payments"><option value="all">All payments</option><option value="only">Regulars only</option><option value="hide">Hide regulars</option></select>
-      <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
+      <div class="ms" id="msCat"></div>
+      <div class="ms" id="msTag"></div>
     </div>
   <div class="sub" style="margin-bottom:4px">Grouped by pay cycle. <a href="#" id="expandAll">Expand all</a> · <a href="#" id="collapseAll">Collapse all</a></div>
   <table><tbody id="rows"></tbody></table>
@@ -562,6 +571,7 @@ async function fetchRange({ token, base }, sinceMs, untilMs, maxPages, onProgres
       accountId: t.relationships.account.data.id,
       transferAccountId: t.relationships.transferAccount?.data?.id || null,
       category: t.relationships.category.data?.id || null,
+      tags: (t.relationships.tags?.data || []).map(x => x.id),
     });
     url = page.links?.next;
     if (onProgress) onProgress(rows.length);
@@ -570,12 +580,14 @@ async function fetchRange({ token, base }, sinceMs, untilMs, maxPages, onProgres
 }
 
 let lastAccountInfo = [], lastRows = [], lastCategories = {};
+const SCHEMA = 2;   // bump when the cached transaction shape changes
 const DAY = 864e5, OVERLAP = 14 * DAY; // re-fetch recent days so held/pending transactions get their final state
 
 // Bring the cache up to date and make sure it reaches back to wantSinceMs. Only fetches what's missing.
 async function sync(auth, wantSinceMs, { force = false, onProgress } = {}) {
   const c = await getCache(auth.token);
-  if (force) await c.clear();
+  const prevMeta = await c.getMeta('meta');
+  if (force || (prevMeta && prevMeta.schema !== SCHEMA)) await c.clear();   // schema bump: cached rows from before tags existed are refetched once
   const accountInfo = await fetchAccounts(auth);
   const accounts = Object.fromEntries(accountInfo.map(a => [a.id, a.name]));
   await c.setMeta('accounts', accounts);
@@ -605,7 +617,7 @@ async function sync(auth, wantSinceMs, { force = false, onProgress } = {}) {
       meta.truncated = old.more;
     }
   }
-  meta.syncedAt = now;
+  meta.syncedAt = now; meta.schema = SCHEMA;
   await c.setMeta('meta', meta);
   const rows = (await c.all()).map(t => ({
     ...t, account: accounts[t.accountId] || 'Unknown',
@@ -638,6 +650,7 @@ async function load(force = false) {
     $('status').textContent = '';
     showCacheInfo(rows, meta, added);
     await ensureRegulars(auth);
+    refreshFilterOptions();
     render(); renderFlow(); renderSpendFlow(); renderBalanceChart(since, until); renderCycles(auth); renderChips();
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
@@ -674,7 +687,7 @@ function openVendor(key, highlightId) {
   $('vAll').checked = whole; $('vAll').dataset.key = key;
   $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}${isLunch(t) ? ' lunch' : ''}">
     <td><input type="checkbox" data-id="${esc(t.id)}" aria-label="Regular on ${new Date(t.createdAt).toLocaleDateString('en-AU')}" ${whole || regularIds.has(t.id) ? 'checked' : ''} ${whole ? 'disabled' : ''}></td>
-    <td>${when(t)}${lunchTag(t)}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${effCat(t) ? catChip(effCat(t), catStore.txns[t.id] !== undefined ? '*' : '') : 'Uncategorised'} ✎</button></div></td>
+    <td>${when(t)}${lunchTag(t)}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} ${tagPills(t)} · <button class="catbtn" data-cattx="${esc(t.id)}">${effCat(t) ? catChip(effCat(t), catStore.txns[t.id] !== undefined ? '*' : '') : 'Uncategorised'} ✎</button></div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
   $('vCat').innerHTML = catOptions(catStore.vendors[key] ?? '', `Up's category`);
   $('vCat').dataset.key = key;
@@ -715,7 +728,7 @@ const effCat = t => catStore.txns[t.id] ?? catStore.vendors[vendorKey(t)] ?? t.c
 const isCatOverridden = t => catStore.txns[t.id] !== undefined || catStore.vendors[vendorKey(t)] !== undefined;
 const saveCats = () => {
   try { localStorage.setItem(regKey + '_cats', JSON.stringify(catStore)); } catch {}
-  renderCycles(); render(); renderChips();
+  refreshFilterOptions(); renderCycles(); render(); renderChips();
   if ($('vendorDlg').open) openVendor($('vAll').dataset.key);
 };
 
@@ -1058,7 +1071,7 @@ function openCycleTxns(spec, ci) {
   $('cTitle').textContent = labelFor(spec);
   $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
     ` · ${items.length} transaction${items.length === 1 ? '' : 's'} · ${money(total)}`;
-  $('cRows').innerHTML = items.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}<div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + catChip(effCat(t)) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
+  $('cRows').innerHTML = items.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}<div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + catChip(effCat(t)) : ''} ${tagPills(t)}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
   if (!$('cycleDlg').open) $('cycleDlg').showModal();
 }
 $('cycleRows').onclick = e => { const td = e.target.closest('td[data-spec]'); if (td) openCycleTxns(td.dataset.spec, td.dataset.c); };
@@ -1257,7 +1270,60 @@ let groupKeys = [];
 const INCOME_ID = '__in__';   // pseudo-category for money in and transfers
 let lastFilterSig = null, subDefault = true;   // subDefault: whether categories start open (Collapse all / Expand all flip it)
 const subOpen = new Map();   // 'cycleKey|category' → open? (default open) for the nest-by-category view
-let catFilter = null;   // category id to show only (''= uncategorised), set by clicking a segment of a pay cycle's category line
+const NO_TAG = '__none__';
+const catSel = new Set(), tagSel = new Set();   // multi-select filters: category ids ('' = uncategorised) and tag names
+const tagPills = t => (t.tags || []).map(x => `<span class="utag">#${esc(x)}</span>`).join(' ');
+
+// A dropdown with checkboxes: pick any number of options. Selection lives in `selSet`; onChange fires after each change.
+function makeMultiSelect(root, label, selSet, onChange) {
+  root.innerHTML = `<button type="button" class="msbtn" aria-haspopup="true" aria-expanded="false"></button>
+    <div class="mspop" hidden><input type="search" placeholder="Search ${esc(label.toLowerCase())}…" aria-label="Search ${esc(label)}"><div class="mslist" role="group" aria-label="${esc(label)}"></div>
+    <div class="msfoot"><button type="button" class="msclear">Clear</button></div></div>`;
+  const btn = root.querySelector('.msbtn'), pop = root.querySelector('.mspop'), list = root.querySelector('.mslist'), search = root.querySelector('input');
+  let options = [];
+  const paintBtn = () => {
+    const n = selSet.size, only = n === 1 ? options.find(o => o.value === [...selSet][0]) : null;
+    btn.textContent = (n === 0 ? label : n === 1 ? (only ? only.label : label + ' (1)') : `${label} (${n})`) + ' ▾';
+    btn.classList.toggle('on', n > 0);
+  };
+  const paintList = () => {
+    const q = search.value.toLowerCase();
+    list.innerHTML = options.filter(o => o.label.toLowerCase().includes(q)).map(o =>
+      `<label class="msopt"><input type="checkbox" value="${esc(o.value)}" ${selSet.has(o.value) ? 'checked' : ''}><span class="mslab">${o.html}</span><span class="sub">${o.count}</span></label>`).join('') || '<div class="sub" style="padding:6px 8px">No matches</div>';
+  };
+  const close = () => { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  btn.onclick = () => {
+    const open = pop.hidden; pop.hidden = !open; btn.setAttribute('aria-expanded', String(open));
+    if (open) { search.value = ''; paintList(); pop.style.left = '0px'; const r = pop.getBoundingClientRect(); if (r.right > innerWidth - 8) pop.style.left = (innerWidth - 8 - r.right) + 'px'; }
+  };
+  list.onchange = e => { const v = e.target.value; e.target.checked ? selSet.add(v) : selSet.delete(v); paintBtn(); onChange(); };
+  search.oninput = paintList;
+  root.querySelector('.msclear').onclick = () => { selSet.clear(); paintBtn(); paintList(); onChange(); };
+  document.addEventListener('pointerdown', e => { if (!root.contains(e.target)) close(); });
+  root.addEventListener('keydown', e => { if (e.key === 'Escape') { close(); btn.focus(); } });
+  return {
+    setOptions(opts) { options = opts; for (const v of [...selSet]) if (!opts.some(o => o.value === v)) selSet.delete(v); paintBtn(); if (!pop.hidden) paintList(); },
+    sync() { paintBtn(); if (!pop.hidden) paintList(); },
+    hide(h) { root.hidden = h; },
+  };
+}
+const msCat = makeMultiSelect($('msCat'), 'Categories', catSel, () => render());
+const msTag = makeMultiSelect($('msTag'), 'Tags', tagSel, () => render());
+
+// Options reflect what's in the current date range, with counts
+function refreshFilterOptions() {
+  const cats = {}, tags = {}; let untagged = 0;
+  for (const t of all) {
+    const c = effCat(t) || ''; cats[c] = (cats[c] || 0) + 1;
+    if (t.tags && t.tags.length) t.tags.forEach(x => tags[x] = (tags[x] || 0) + 1); else untagged++;
+  }
+  msCat.setOptions(Object.keys(cats).sort((a, b) => (a === '') - (b === '') || catName(a).localeCompare(catName(b)))
+    .map(id => ({ value: id, label: id ? catName(id) : 'Uncategorised', count: cats[id], html: id ? catChip(id) : '<span class="cat" style="--h:220;background:var(--line);color:var(--muted)">Uncategorised</span>' })));
+  const names = Object.keys(tags).sort((a, b) => a.localeCompare(b));
+  msTag.hide(!names.length);   // no tags in this range, so no point offering the filter
+  msTag.setOptions([...names.map(n => ({ value: n, label: n, count: tags[n], html: `<span class="utag">#${esc(n)}</span>` })),
+    ...(names.length ? [{ value: NO_TAG, label: 'No tag', count: untagged, html: '<span class="sub">No tag</span>' }] : [])]);
+}
 // share: this transaction's slice of its pay cycle's (filtered) spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
 const txRow = (t, cyc) => {
   const spend = t.amount < 0 && !t.isTransfer && cyc && cyc.spent > 0;
@@ -1265,14 +1331,14 @@ const txRow = (t, cyc) => {
   const bar = spend ? `<div class="share" ${hue === null ? '' : `style="--h:${hue}"`} title="${(share * 100).toFixed(1)}% of the spending shown for this pay cycle"><i style="width:${Math.max(1.5, -t.amount / cyc.max * 100).toFixed(1)}%"></i></div>` : '';
   return `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
     <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${when(t)} · ${esc(t.account)}${c ? ' · ' + catChip(c, isCatOverridden(t) ? '*' : '') : ''}${t.message ? ' · ' + esc(t.message) : ''}</div>${bar}</td>
+      <div class="sub">${when(t)} · ${esc(t.account)}${c ? ' · ' + catChip(c, isCatOverridden(t) ? '*' : '') : ''} ${tagPills(t)}${t.message ? ' · ' + esc(t.message) : ''}</div>${bar}</td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}${spend ? `<div class="sub">${share >= 0.095 ? Math.round(share * 100) : (share * 100).toFixed(1)}%</div>` : ''}</td></tr>`;
 };
 
 function render() {
   const q = $('q').value.toLowerCase(), acct = $('account').value, regMode = $('regMode').value, hideXfer = $('hideXfer').checked;
-  const list = all.filter(t => (!acct || t.account === acct) && (regMode === 'all' || (regMode === 'only') === isRegular(t)) && (!hideXfer || !(t.isTransfer || isSalary(t))) && (catFilter === null || (effCat(t) || '') === catFilter) &&
-    (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
+  const list = all.filter(t => (!acct || t.account === acct) && (regMode === 'all' || (regMode === 'only') === isRegular(t)) && (!hideXfer || !(t.isTransfer || isSalary(t))) && (!catSel.size || catSel.has(effCat(t) || '')) && (!tagSel.size || ((t.tags || []).length ? t.tags.some(x => tagSel.has(x)) : tagSel.has(NO_TAG))) &&
+    (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''} ${(t.tags || []).join(' ')}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
   const inn = real.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
@@ -1308,19 +1374,18 @@ function render() {
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
   // A different filter starts afresh: drop earlier expand/collapse choices so the new results aren't hidden in collapsed groups
-  const sig = [q, acct, regMode, catFilter, hideXfer].join('\u0000');
+  const sig = [q, acct, regMode, [...catSel].join(','), [...tagSel].join(','), hideXfer].join('\u0000');
   if (sig !== lastFilterSig) { groupOpen.clear(); subOpen.clear(); subDefault = true; lastFilterSig = sig; }
   const nest = $('nestCat').checked;
   $('rows').classList.toggle('nested', nest);
-  const filtering = Boolean(q || regMode !== 'all' || catFilter !== null || hideXfer);
-  renderCatFilterChip();
+  const filtering = Boolean(q || regMode !== 'all' || catSel.size || tagSel.size || hideXfer);
   let html = '', first = true;
   for (const g of groups.values()) {
     const open = groupOpen.has(g.key) ? groupOpen.get(g.key) : (filtering || first), cyc = cycles.get(g.key);   // an explicit expand/collapse always wins; filtering just opens groups by default
     first = false;
     const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => (x[0] === '') - (y[0] === '') || catName(x[0]).localeCompare(catName(y[0]))).map(([id, v]) =>   // A–Z, so a category sits in the same place in every cycle; uncategorised last
 
-      `<i role="button" tabindex="0" class="${catFilter !== null && catFilter !== id ? 'dim' : ''}" data-cat="${esc(id)}" data-amt="${v}" data-pct="${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}" aria-label="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)}. Press to filter" style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}"></i>`).join('') : '';
+      `<i role="button" tabindex="0" class="${catSel.size && !catSel.has(id) ? 'dim' : ''}" data-cat="${esc(id)}" data-amt="${v}" data-pct="${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}" aria-label="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)}. Press to filter" style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}"></i>`).join('') : '';
     html += `<tr class="gh" data-g="${esc(g.key)}" data-label="${esc(labelOf(g.key))}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
       <div class="amt neg">${cyc ? money(-cyc.spent) : ''}<div class="sub">spent</div></div></div>${segs ? `<div class="brk" aria-label="Spending by category">${segs}</div>` : ''}</td></tr>`;
     if (open && !nest) html += g.items.map(t => txRow(t, cyc)).join('');
@@ -1346,14 +1411,6 @@ function render() {
   $('rows').innerHTML = html || '<tr><td class="sub">No transactions match.</td></tr>';
 }
 
-function renderCatFilterChip() {
-  const el = $('catFilterChip');
-  el.hidden = catFilter === null;
-  if (catFilter === null) return;
-  el.innerHTML = `Category: ${catFilter ? catChip(catFilter) : '<span class="cat" style="--h:220">Uncategorised</span>'} <button id="catFilterClear" aria-label="Clear category filter">×</button>`;
-}
-$('catFilterChip').onclick = e => { if (e.target.closest('#catFilterClear')) { catFilter = null; render(); } };
-
 // Hover a segment of a pay cycle's category line to see what it is; click to filter the list to that category
 const segTip = $('segTip');
 const segOf = e => e.target.closest && e.target.closest('.brk i');
@@ -1364,14 +1421,14 @@ const showSegTip = (e, seg) => {
   const row = document.createElement('div'), nm = document.createElement('span'), k = document.createElement('i'), b = document.createElement('b');
   row.className = 'row'; k.className = 'k'; k.style.background = id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)';
   nm.append(k, id ? catName(id) : 'Uncategorised'); b.textContent = `${money(-Number(seg.dataset.amt))} · ${seg.dataset.pct}%`; row.append(nm, b); segTip.append(row);
-  const hint = document.createElement('div'); hint.className = 'd'; hint.style.marginTop = '4px'; hint.textContent = catFilter === id ? 'Click to clear the filter' : 'Click to show only this category'; segTip.append(hint);
+  const hint = document.createElement('div'); hint.className = 'd'; hint.style.marginTop = '4px'; hint.textContent = catSel.size === 1 && catSel.has(id) ? 'Click to clear the filter' : 'Click to show only this category'; segTip.append(hint);
   segTip.hidden = false;
   const x = Math.min(e.clientX + 14, window.innerWidth - segTip.offsetWidth - 8), y = e.clientY + 18 + segTip.offsetHeight > window.innerHeight ? e.clientY - segTip.offsetHeight - 10 : e.clientY + 18;
   segTip.style.left = Math.max(8, x) + 'px'; segTip.style.top = y + 'px';
 };
 $('rows').addEventListener('pointermove', e => { const seg = segOf(e); if (seg) showSegTip(e, seg); else segTip.hidden = true; });
 $('rows').addEventListener('pointerleave', () => { segTip.hidden = true; });
-const toggleSegFilter = seg => { const id = seg.dataset.cat; catFilter = catFilter === id ? null : id; segTip.hidden = true; render(); };
+const toggleSegFilter = seg => { const id = seg.dataset.cat, same = catSel.size === 1 && catSel.has(id); catSel.clear(); if (!same) catSel.add(id); msCat.sync(); segTip.hidden = true; render(); };
 $('rows').addEventListener('click', e => { const seg = segOf(e); if (seg) { e.stopPropagation(); toggleSegFilter(seg); } }, true);   // capture: don't also toggle the group
 $('rows').addEventListener('keydown', e => { const seg = segOf(e); if (seg && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleSegFilter(seg); } });
 

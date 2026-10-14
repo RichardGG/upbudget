@@ -35,6 +35,7 @@ The page is split into tabs: **Transactions**, **Pay cycles**, **Flows** (money 
   - Graph of loan balance, offset balance and debt remaining over time (rebuilt from transaction history; hover or use arrow keys for values, table view below)
   - Payoff projections (last 3 months, last 12 months and all-history pace) shown as dashed lines with estimated payoff dates
 - Transactions list grouped by pay cycle (collapsible, newest open), with a filter to show only, or hide, regular payments
+  - Up tags are shown on each transaction; multi-select dropdown filters for categories and tags (clicking a category line on a pay cycle header selects it)
   - "Hide transfers & salary" filter
   - Optional "Nest by category" view: categories A–Z inside each pay cycle, each collapsible, with its spend and share of the cycle
   - Each pay cycle header has a coloured category-breakdown line; each purchase has a bar and % showing its share of that cycle's spending (of what's shown, when filtering)
