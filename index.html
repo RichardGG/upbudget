@@ -1272,7 +1272,8 @@ function render() {
   for (const g of groups.values()) {
     const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first), cyc = cycles.get(g.key);
     first = false;
-    const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => y[1] - x[1]).map(([id, v]) =>
+    const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => (x[0] === '') - (y[0] === '') || catName(x[0]).localeCompare(catName(y[0]))).map(([id, v]) =>   // A–Z, so a category sits in the same place in every cycle; uncategorised last
+
       `<i role="button" tabindex="0" class="${catFilter !== null && catFilter !== id ? 'dim' : ''}" data-cat="${esc(id)}" data-amt="${v}" data-pct="${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}" aria-label="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)}. Press to filter" style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}"></i>`).join('') : '';
     html += `<tr class="gh" data-g="${esc(g.key)}" data-label="${esc(labelOf(g.key))}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
       <div class="amt neg">${cyc ? money(-cyc.spent) : ''}<div class="sub">spent</div></div></div>${segs ? `<div class="brk" aria-label="Spending by category">${segs}</div>` : ''}</td></tr>`;
