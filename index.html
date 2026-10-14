@@ -90,8 +90,13 @@
       <span><span class="k" style="background:var(--s2)"></span>Offset balance</span>
       <span><span class="k" style="background:var(--s3)"></span>Debt remaining</span>
     </div>
+    <label class="sub"><input type="checkbox" id="showProj" checked> Show payoff projections</label>
     <div class="chart"><svg id="balChart" role="img" tabindex="0" aria-label="Home loan, offset and remaining debt balances over time"></svg><div id="balTip" class="tip" hidden></div></div>
     <div id="balNote" class="sub"></div>
+    <div id="projBox" hidden>
+      <table><thead><tr><th>Projection (straight line)</th><th class="amt">Debt falling by</th><th class="amt">Debt remaining reaches $0</th><th class="amt">Loan balance alone reaches $0</th></tr></thead><tbody id="projRows"></tbody></table>
+      <div class="sub">Assumes the pace of the period continues unchanged, including interest and the rate you add to savings. A rough guide only, not financial advice.</div>
+    </div>
     <details><summary>Table view</summary><table><thead><tr><th>Month end</th><th class="amt">Loan</th><th class="amt">Offset</th><th class="amt">Remaining</th></tr></thead><tbody id="balTable"></tbody></table></details>
     <details><summary>Account balances</summary><table><tbody id="offsetDetail"></tbody></table></details>
   </section>
@@ -276,42 +281,89 @@ function niceTicks(lo, hi, n = 4) {
   return out;
 }
 
+// Straight-line projections of recent progress: if debt kept changing at its last-3-month / last-12-month /
+// all-history pace, when would it reach zero? (Pace already includes interest and how much you save.)
+const PROJ_STYLES = [{ dash: '2 4', name: 'Last 3 months pace' }, { dash: '8 4', name: 'Last 12 months pace' }, { dash: '', name: 'All-history pace' }];
+const MAX_PROJ_DAYS = 40 * 365;
+function computeProjections(set) {
+  const t = set.N - 1, out = [];
+  [90, 365, t].forEach((w, i) => {
+    if (w < 30 || w > t) return;
+    const per = a => (a[t] - a[t - w]) / w;                    // $ per day
+    const fin = (arr, s) => arr[t] <= 0 ? 0 : s < 0 ? arr[t] / -s : Infinity;
+    const sr = per(set.remaining), sd = per(set.debt);
+    out.push({ ...PROJ_STYLES[i], w, slopeRem: sr, slopeDebt: sd, daysRem: fin(set.remaining, sr), daysDebt: fin(set.debt, sd) });
+  });
+  return out;
+}
+const spanText = days => { const m = Math.round(days / 30.44), y = Math.floor(m / 12); return days <= 0 ? 'now' : (y ? `${y} yr ` : '') + (m % 12 || !y ? `${m % 12} mo` : '').trim(); };
+const payoffText = (set, days) => !isFinite(days) ? 'Not on track (not falling)' : days <= 0 ? 'Already paid off'
+  : days > MAX_PROJ_DAYS ? 'More than 40 years' : `${new Date((set.N - 1 + set.start + days) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })} (${spanText(days)})`;
+
 function renderBalanceChart(sinceMs, untilMs) {
   const svg = $('balChart'), tip = $('balTip');
   const set = buildBalanceSeries(lastRows, lastAccountInfo);
   if (!set || !lastAccountInfo.some(a => a.type === 'HOME_LOAN')) { svg.innerHTML = ''; return; }
-  const i0 = Math.max(0, (sinceMs ? dayIdx(sinceMs) : 0) - set.start), i1 = Math.min(set.N - 1, (isFinite(untilMs) ? dayIdx(untilMs) : set.N) - set.start);
+  const todayD = set.N - 1;
+  const i0 = Math.max(0, (sinceMs ? dayIdx(sinceMs) : 0) - set.start), i1 = Math.min(todayD, (isFinite(untilMs) ? dayIdx(untilMs) : set.N) - set.start);
   if (i1 <= i0) { svg.innerHTML = ''; $('balNote').textContent = 'No transaction history in this date range.'; return; }
-  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}); the right-hand end is today's actual balance.`;
+
+  const projs = computeProjections(set);
+  const showProj = $('showProj').checked && i1 === todayD && projs.length > 0;
+  const finite = projs.filter(p => isFinite(p.daysRem) && p.daysRem > 0).map(p => Math.min(p.daysRem, MAX_PROJ_DAYS));
+  const iEnd = showProj && finite.length ? todayD + Math.ceil(Math.max(...finite) * 1.03) : i1;   // x-axis runs on into the future
+  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}); the left of "today" is history, dashed lines are projections.`;
+
+  // Payoff table
+  $('projBox').hidden = !projs.length;
+  $('projRows').innerHTML = projs.map(p => `<tr><td>${esc(p.name)}</td>
+    <td class="amt">${money(-p.slopeRem * 30.44)}/mo</td><td class="amt">${esc(payoffText(set, p.daysRem))}</td><td class="amt">${esc(payoffText(set, p.daysDebt))}</td></tr>`).join('');
+
   const series = [
     { key: 'debt', name: 'Loan balance', color: 'var(--s1)', v: set.debt },
     { key: 'offset', name: 'Offset balance', color: 'var(--s2)', v: set.offset },
     { key: 'remaining', name: 'Debt remaining', color: 'var(--s3)', v: set.remaining },
   ];
-  const W = 900, H = 300, L = 56, R = 120, T = 12, B = 26, pw = W - L - R, ph = H - T - B;
+  const W = 900, H = 300, L = 56, R = showProj ? 150 : 120, T = 12, B = 26, pw = W - L - R, ph = H - T - B;
   let lo = 0, hi = 0;
   for (let d = i0; d <= i1; d++) for (const x of series) { lo = Math.min(lo, x.v[d]); hi = Math.max(hi, x.v[d]); }
   hi = hi * 1.05 || 1;
-  const X = d => L + (d - i0) / (i1 - i0) * pw, Y = v => T + (1 - (v - lo) / (hi - lo)) * ph;
+  const X = d => L + (d - i0) / (iEnd - i0) * pw, Y = v => T + (1 - (v - lo) / (hi - lo)) * ph;
+  const projVal = (p, d) => Math.max(0, set.remaining[todayD] + p.slopeRem * (d - todayD));
   let out = '';
   for (const t of niceTicks(lo, hi)) out += `<line x1="${L}" x2="${L + pw}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--grid)"/><text x="${L - 6}" y="${Y(t)}" text-anchor="end" dominant-baseline="middle">${compact(t)}</text>`;
-  // x ticks: ~6 evenly spaced dates
   for (let k = 0; k <= 5; k++) {
-    const d = Math.round(i0 + (i1 - i0) * k / 5);
+    const d = Math.round(i0 + (iEnd - i0) * k / 5);
     out += `<text x="${X(d)}" y="${H - 6}" text-anchor="${k === 0 ? 'start' : k === 5 ? 'end' : 'middle'}">${new Date((set.start + d) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })}</text>`;
   }
-  const step = Math.max(1, Math.floor((i1 - i0) / 900)); // cap points drawn
+  const step = Math.max(1, Math.floor((i1 - i0) / 900));
   for (const x of series) {
     let path = '';
     for (let d = i0; d <= i1; d += step) path += (path ? 'L' : 'M') + X(d).toFixed(1) + ' ' + Y(x.v[d]).toFixed(1);
     if ((i1 - i0) % step) path += 'L' + X(i1).toFixed(1) + ' ' + Y(x.v[i1]).toFixed(1);
     out += `<path d="${path}" fill="none" stroke="${x.color}" stroke-width="2" stroke-linejoin="round"/>`;
   }
-  // direct labels at the line ends, nudged apart so they never collide
-  const ends = series.map(x => ({ x, y: Y(x.v[i1]) })).sort((a, b) => a.y - b.y);
-  for (let k = 1; k < ends.length; k++) ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 30);   // each label is two lines tall
-  for (let k = ends.length - 2; k >= 0; k--) if (ends[ends.length - 1].y > T + ph) ends[k].y = Math.min(ends[k].y, ends[k + 1].y - 30);
-  for (const e of ends) out += `<text class="lbl" x="${L + pw + 8}" y="${e.y}" dominant-baseline="middle">${esc(e.x.name)}</text><text x="${L + pw + 8}" y="${e.y + 13}" dominant-baseline="middle">${money(e.x.v[i1])}</text>`;
+  if (showProj) {
+    out += `<line x1="${X(todayD)}" x2="${X(todayD)}" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-opacity=".5"/><text x="${X(todayD) - 4}" y="${T + 8}" text-anchor="end">Today</text>`;
+    for (const p of projs) {
+      const end = Math.min(iEnd, todayD + (isFinite(p.daysRem) ? p.daysRem : MAX_PROJ_DAYS), todayD + MAX_PROJ_DAYS);
+      if (p.daysRem <= 0 || end <= todayD) continue;
+      out += `<line x1="${X(todayD)}" y1="${Y(set.remaining[todayD])}" x2="${X(end)}" y2="${Y(projVal(p, end))}" stroke="var(--s3)" stroke-width="2" stroke-dasharray="${p.dash}" stroke-linecap="round"/>`;
+      if (isFinite(p.daysRem) && p.daysRem <= MAX_PROJ_DAYS) out += `<circle cx="${X(end)}" cy="${Y(0)}" r="4" fill="var(--s3)" stroke="var(--bg)" stroke-width="2"/>`;
+    }
+    // end-of-line key in the right margin: dash swatch, scenario name, payoff date (stacked so nothing collides)
+    projs.slice().sort((a, b) => a.daysRem - b.daysRem).forEach((p, k) => {
+      const y = T + ph - 66 + k * 30 - (projs.length - 3) * 0;
+      out += `<line x1="${L + pw + 8}" x2="${L + pw + 26}" y1="${y}" y2="${y}" stroke="var(--s3)" stroke-width="2" stroke-dasharray="${p.dash}" stroke-linecap="round"/>
+        <text x="${L + pw + 30}" y="${y}" dominant-baseline="middle" class="lbl">${esc(p.name.replace(' pace', ''))}</text>
+        <text x="${L + pw + 30}" y="${y + 13}" dominant-baseline="middle">${esc(isFinite(p.daysRem) ? (p.daysRem <= 0 ? 'paid off' : p.daysRem > MAX_PROJ_DAYS ? '40+ years' : new Date((todayD + set.start + p.daysRem) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })) : 'not falling')}</text>`;
+    });
+  } else {
+    const ends = series.map(x => ({ x, y: Y(x.v[i1]) })).sort((a, b) => a.y - b.y);
+    for (let k = 1; k < ends.length; k++) ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 30);   // each label is two lines tall
+    for (let k = ends.length - 2; k >= 0; k--) if (ends[ends.length - 1].y > T + ph) ends[k].y = Math.min(ends[k].y, ends[k + 1].y - 30);
+    for (const e of ends) out += `<text class="lbl" x="${X(i1) + 8}" y="${e.y}" dominant-baseline="middle">${esc(e.x.name)}</text><text x="${X(i1) + 8}" y="${e.y + 13}" dominant-baseline="middle">${money(e.x.v[i1])}</text>`;
+  }
   out += `<line id="balCross" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>` +
     series.map(x => `<circle id="balDot_${x.key}" r="4" fill="${x.color}" stroke="var(--bg)" stroke-width="2" visibility="hidden"/>`).join('') +
     `<rect id="balHit" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/>`;
@@ -319,24 +371,31 @@ function renderBalanceChart(sinceMs, untilMs) {
   svg.innerHTML = out;
 
   let cur = null;
+  const hideDots = () => series.forEach(x => $('balDot_' + x.key).setAttribute('visibility', 'hidden'));
   const show = d => {
-    cur = d = Math.max(i0, Math.min(i1, d));
+    cur = d = Math.max(i0, Math.min(iEnd, d));
+    const future = d > i1;
     $('balCross').setAttribute('x1', X(d)); $('balCross').setAttribute('x2', X(d)); $('balCross').setAttribute('visibility', 'visible');
-    for (const x of series) { const c = $('balDot_' + x.key); c.setAttribute('cx', X(d)); c.setAttribute('cy', Y(x.v[d])); c.setAttribute('visibility', 'visible'); }
+    hideDots();
+    const rows = [];
+    if (!future) for (const x of series) {
+      const c = $('balDot_' + x.key); c.setAttribute('cx', X(d)); c.setAttribute('cy', Y(x.v[d])); c.setAttribute('visibility', 'visible');
+      rows.push([x.color, x.name, money(x.v[d])]);
+    } else for (const p of projs) rows.push(['var(--s3)', `${p.name.replace(' pace', '')} (projected)`, money(projVal(p, d))]);
     tip.replaceChildren();
-    const dd = document.createElement('div'); dd.className = 'd'; dd.textContent = dayLabel(set.start + d); tip.append(dd);
-    for (const x of series) {
-      const row = document.createElement('div'), k = document.createElement('i'), name = document.createElement('span'), val = document.createElement('b');
-      row.className = 'row'; k.className = 'k'; k.style.background = x.color; name.append(k, x.name); val.textContent = money(x.v[d]);
-      row.append(name, val); tip.append(row);
+    const dd = document.createElement('div'); dd.className = 'd'; dd.textContent = dayLabel(set.start + d) + (future ? ' · debt remaining' : ''); tip.append(dd);
+    for (const [color, name, value] of rows) {
+      const row = document.createElement('div'), k = document.createElement('i'), nm = document.createElement('span'), val = document.createElement('b');
+      row.className = 'row'; k.className = 'k'; k.style.background = color; nm.append(k, name); val.textContent = value;
+      row.append(nm, val); tip.append(row);
     }
     tip.hidden = false;
     const box = svg.getBoundingClientRect(), px = X(d) / W * box.width;
     tip.style.left = Math.min(Math.max(px + 12, 0), box.width - tip.offsetWidth) + 'px'; tip.style.top = '0px';
   };
-  const hide = () => { tip.hidden = true; for (const id of ['balCross', ...series.map(x => 'balDot_' + x.key)]) $(id).setAttribute('visibility', 'hidden'); };
+  const hide = () => { tip.hidden = true; $('balCross').setAttribute('visibility', 'hidden'); hideDots(); };
   const hit = $('balHit');
-  hit.onpointermove = e => { const box = svg.getBoundingClientRect(); show(Math.round(i0 + ((e.clientX - box.left) / box.width * W - L) / pw * (i1 - i0))); };
+  hit.onpointermove = e => { const box = svg.getBoundingClientRect(); show(Math.round(i0 + ((e.clientX - box.left) / box.width * W - L) / pw * (iEnd - i0))); };
   hit.onpointerleave = hide;
   svg.onkeydown = e => {
     const stepDays = e.shiftKey ? 30 : 1;
@@ -346,7 +405,6 @@ function renderBalanceChart(sinceMs, untilMs) {
   };
   svg.onblur = hide;
 
-  // Table view: month-end values
   let rowsHtml = '';
   for (let d = i1; d >= i0; d--) {
     const dt = new Date((set.start + d) * 864e5), next = new Date((set.start + d + 1) * 864e5);
@@ -634,6 +692,9 @@ function render() {
 $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
+$('showProj').onchange = () => renderBalanceChart(
+  $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0,
+  $('until').value ? new Date($('until').value + 'T23:59:59').getTime() : Infinity);
 $('recOnly').onchange = renderRecurring;
 $('recRows').onchange = e => {
   const k = e.target.dataset.key; if (k === undefined) return;

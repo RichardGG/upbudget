@@ -29,6 +29,7 @@ history you newly ask for. Use **Clear cache & reload** to refetch everything. N
 - Money in / out / net totals (internal transfers excluded)
 - Home loan offset: loan balance minus the combined balance of all other accounts, with debt remaining
   - Graph of loan balance, offset balance and debt remaining over time (rebuilt from transaction history; hover or use arrow keys for values, table view below)
+  - Payoff projections (last 3 months, last 12 months and all-history pace) shown as dashed lines with estimated payoff dates
 - Money flow diagram: external income → accounts, plus net transfers between accounts
 - Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 10 years, with typical amount, next due date and estimated monthly cost
   - Tick the payees that really are regular; choices are saved in your browser and can be filtered with "Confirmed only"
