@@ -1251,13 +1251,14 @@ function renderFlow() {
 const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
 let groupKeys = [];
 const INCOME_ID = '__in__';   // pseudo-category for money in and transfers
+let lastFilterSig = null;
 const subOpen = new Map();   // 'cycleKey|category' → open? (default open) for the nest-by-category view
 let catFilter = null;   // category id to show only (''= uncategorised), set by clicking a segment of a pay cycle's category line
-// share: this transaction's slice of its pay cycle's spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
+// share: this transaction's slice of its pay cycle's (filtered) spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
 const txRow = (t, cyc) => {
   const spend = t.amount < 0 && !t.isTransfer && cyc && cyc.spent > 0;
   const c = effCat(t), hue = c ? catHue(c) : null, share = spend ? -t.amount / cyc.spent : 0;
-  const bar = spend ? `<div class="share" ${hue === null ? '' : `style="--h:${hue}"`} title="${(share * 100).toFixed(1)}% of this pay cycle's spending"><i style="width:${Math.max(1.5, -t.amount / cyc.max * 100).toFixed(1)}%"></i></div>` : '';
+  const bar = spend ? `<div class="share" ${hue === null ? '' : `style="--h:${hue}"`} title="${(share * 100).toFixed(1)}% of the spending shown for this pay cycle"><i style="width:${Math.max(1.5, -t.amount / cyc.max * 100).toFixed(1)}%"></i></div>` : '';
   return `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
     <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
       <div class="sub">${when(t)} · ${esc(t.account)}${c ? ' · ' + catChip(c, isCatOverridden(t) ? '*' : '') : ''}${t.message ? ' · ' + esc(t.message) : ''}</div>${bar}</td>
@@ -1291,9 +1292,9 @@ function render() {
     const start = Number(key.slice(1)), i = paydays.indexOf(start), end = i + 1 < paydays.length ? paydays[i + 1] - 1 : null;
     return `${fmt(start)} – ${end === null ? 'now' : fmt(end)}${end === null ? ' (current pay cycle)' : ''}`;
   };
-  // Whole-cycle spending (ignores search/filters) so shares and the category line always describe the real cycle
+  // Per-cycle spending of the transactions that pass the current filters, so totals, shares and the category line all describe what's listed
   const cycles = new Map();
-  for (const t of all) {
+  for (const t of list) {
     if (t.amount >= 0 || t.isTransfer) continue;
     const k = keyOf(t); let c = cycles.get(k); if (!c) cycles.set(k, c = { spent: 0, max: 0, cats: {} });
     const a = -t.amount, cat = effCat(t) || '';
@@ -1302,13 +1303,16 @@ function render() {
   const groups = new Map();
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
+  // A different filter starts afresh: drop earlier expand/collapse choices so the new results aren't hidden in collapsed groups
+  const sig = [q, acct, regMode, catFilter].join('\u0000');
+  if (sig !== lastFilterSig) { groupOpen.clear(); lastFilterSig = sig; }
   const nest = $('nestCat').checked;
   $('rows').classList.toggle('nested', nest);
   const filtering = Boolean(q || regMode !== 'all' || catFilter !== null);
   renderCatFilterChip();
   let html = '', first = true;
   for (const g of groups.values()) {
-    const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first), cyc = cycles.get(g.key);
+    const open = groupOpen.has(g.key) ? groupOpen.get(g.key) : (filtering || first), cyc = cycles.get(g.key);   // an explicit expand/collapse always wins; filtering just opens groups by default
     first = false;
     const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => (x[0] === '') - (y[0] === '') || catName(x[0]).localeCompare(catName(y[0]))).map(([id, v]) =>   // A–Z, so a category sits in the same place in every cycle; uncategorised last
 
