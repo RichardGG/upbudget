@@ -148,6 +148,7 @@
       <select id="account" aria-label="Account"><option value="">All accounts</option></select>
       <input id="q" type="search" placeholder="Search…">
       <label class="sub" style="align-self:center"><input type="checkbox" id="nestCat"> Nest by category</label>
+      <label class="sub" style="align-self:center"><input type="checkbox" id="hideXfer"> Hide transfers &amp; salary</label>
       <select id="regMode" aria-label="Regular payments"><option value="all">All payments</option><option value="only">Regulars only</option><option value="hide">Hide regulars</option></select>
       <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
     </div>
@@ -892,9 +893,11 @@ function currentPaydays() {
   const saved = (() => { try { return localStorage.getItem('up_salary_' + regKey) || ''; } catch { return ''; } })();
   if (payMemo && payMemo.rows === lastRows && payMemo.saved === saved) return payMemo.paydays;
   const cands = findSalaryCandidates(lastRows), key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
-  payMemo = { rows: lastRows, saved, paydays: key ? paydayList(lastRows, key) : [] };
+  payMemo = { rows: lastRows, saved, key, paydays: key ? paydayList(lastRows, key) : [] };
   return payMemo.paydays;
 }
+const currentSalaryKey = () => (currentPaydays(), payMemo && payMemo.key);
+const isSalary = t => t.amount > 0 && !t.isTransfer && vendorKey(t) === currentSalaryKey();
 
 function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
   const paydays = paydayList(rows, salaryKey);
@@ -1267,8 +1270,8 @@ const txRow = (t, cyc) => {
 };
 
 function render() {
-  const q = $('q').value.toLowerCase(), acct = $('account').value, regMode = $('regMode').value;
-  const list = all.filter(t => (!acct || t.account === acct) && (regMode === 'all' || (regMode === 'only') === isRegular(t)) && (catFilter === null || (effCat(t) || '') === catFilter) &&
+  const q = $('q').value.toLowerCase(), acct = $('account').value, regMode = $('regMode').value, hideXfer = $('hideXfer').checked;
+  const list = all.filter(t => (!acct || t.account === acct) && (regMode === 'all' || (regMode === 'only') === isRegular(t)) && (!hideXfer || !(t.isTransfer || isSalary(t))) && (catFilter === null || (effCat(t) || '') === catFilter) &&
     (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
@@ -1305,11 +1308,11 @@ function render() {
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
   // A different filter starts afresh: drop earlier expand/collapse choices so the new results aren't hidden in collapsed groups
-  const sig = [q, acct, regMode, catFilter].join('\u0000');
+  const sig = [q, acct, regMode, catFilter, hideXfer].join('\u0000');
   if (sig !== lastFilterSig) { groupOpen.clear(); subOpen.clear(); subDefault = true; lastFilterSig = sig; }
   const nest = $('nestCat').checked;
   $('rows').classList.toggle('nested', nest);
-  const filtering = Boolean(q || regMode !== 'all' || catFilter !== null);
+  const filtering = Boolean(q || regMode !== 'all' || catFilter !== null || hideXfer);
   renderCatFilterChip();
   let html = '', first = true;
   for (const g of groups.values()) {
@@ -1392,7 +1395,8 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
   const shown = $('recOnly').checked ? recRows.filter(r => regulars.has(r.key)) : recRows;
   shown.forEach(r => e.target.checked ? regulars.add(r.key) : regulars.delete(r.key)); saveRegulars(); renderRecurring();
 };
-try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; $('nestCat').checked = localStorage.getItem('up_nest_cat') === '1'; } catch {}
+try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; $('nestCat').checked = localStorage.getItem('up_nest_cat') === '1'; $('hideXfer').checked = localStorage.getItem('up_hide_xfer') === '1'; } catch {}
+$('hideXfer').onchange = () => { try { localStorage.setItem('up_hide_xfer', $('hideXfer').checked ? '1' : '0'); } catch {} render(); };
 $('nestCat').onchange = () => { try { localStorage.setItem('up_nest_cat', $('nestCat').checked ? '1' : '0'); } catch {} render(); };
 $('q').oninput = $('account').onchange = $('regMode').onchange = () => { try { localStorage.setItem('up_reg_mode', $('regMode').value); } catch {} render(); };
 $('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); subOpen.clear(); subDefault = true; render(); };
