@@ -746,14 +746,26 @@ function renderSpendFlow() {
   L.sort((a, b) => (a.id === OTHER_ID) - (b.id === OTHER_ID) || b.value - a.value);
   R.sort((a, b) => (a.id === OTHER_ID) - (b.id === OTHER_ID) || b.value - a.value);
 
-  // Vertical layout: node height ∝ value (min 16px), 8px gaps; columns centred on the taller one
+  // Vertical layout: node height is strictly proportional to dollars, the same scale in both columns, so ribbons keep
+  // their width end to end. Vendor gaps stretch to fill the column; labels are spaced separately (see below).
   const dense = R.length > 30;   // long vendor lists get single-line labels so the diagram stays a sensible height
-  const total = out.reduce((n, t) => n - t.amount, 0), GAP = dense ? 5 : 8, MINH = dense ? 14 : 22;
-  const colH = Math.max(340, Math.max(L.length, R.length) * (dense ? 20 : 32));
-  const k = (colH - GAP * (Math.max(L.length, R.length) - 1)) / total;
-  const place = nodes => { let y = 0; for (const n of nodes) { n.h = Math.max(MINH, n.value * k); n.y = y; y += n.h + GAP; } return y - GAP; };
-  const hL = place(L), hR = place(R), H = Math.max(hL, hR) + 20;
-  L.forEach(n => n.y += (H - 20 - hL) / 2 + 10); R.forEach(n => n.y += (H - 20 - hR) / 2 + 10);
+  const total = out.reduce((n, t) => n - t.amount, 0), pitchR = dense ? 16 : 30, pitchL = 30;
+  const colH = Math.max(340, R.length * pitchR);
+  const k = 0.62 * colH / total;
+  for (const n of [...L, ...R]) n.h = Math.max(1, n.value * k);
+  const sumR = R.reduce((n, x) => n + x.h, 0), gapR = R.length > 1 ? Math.max(1, (colH - sumR) / (R.length - 1)) : 0;
+  let yR = 10; for (const n of R) { n.y = yR; yR += n.h + gapR; }
+  const GAPL = 10, hL = L.reduce((n, x) => n + x.h, 0) + GAPL * (L.length - 1);
+  let yL = 10 + Math.max(0, (yR - gapR - 10 - hL) / 2); for (const n of L) { n.y = yL; yL += n.h + GAPL; }
+  const H = Math.max(yR - gapR, yL - GAPL) + 20;
+  // Label rows: start at each node's centre, push down to avoid overlap, then pull back up if they run off the bottom
+  const spread = (nodes, pitch) => {
+    const ys = nodes.map(n => n.y + n.h / 2);
+    for (let i = 1; i < ys.length; i++) ys[i] = Math.max(ys[i], ys[i - 1] + pitch);
+    for (let i = ys.length - 2; i >= 0 && ys.length && ys[ys.length - 1] > H - 12; i--) ys[i] = Math.min(ys[i], ys[i + 1] - pitch);
+    nodes.forEach((n, i) => n.ly = ys[i]);
+  };
+  spread(L, pitchL); spread(R, pitchR);
 
   const W = 900, LX = 190, RX = 700, NW = 14;
   const rIndex = Object.fromEntries(R.map((n, i) => [n.id, i])), lIndex = Object.fromEntries(L.map((n, i) => [n.id, i]));
@@ -767,11 +779,12 @@ function renderSpendFlow() {
     f.id = i;
     g += `<path class="rib" data-l="${esc(f.l.id)}" data-r="${esc(f.r.id)}" data-i="${i}" fill="${f.l.color}" fill-opacity=".45" d="M${x0} ${f.y0}C${mid} ${f.y0} ${mid} ${f.y1} ${x1} ${f.y1}L${x1} ${f.y1 + f.th_r}C${mid} ${f.y1 + f.th_r} ${mid} ${f.y0 + f.th_l} ${x0} ${f.y0 + f.th_l}Z"/>`;
   });
-  for (const n of L) g += `<g class="nd" data-side="l" data-id="${esc(n.id)}"><rect x="${LX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="${n.color}"/>
-    <text x="${LX - 8}" y="${n.y + n.h / 2 - 5}" text-anchor="end" class="lbl">${esc(short(n.name, 24))}</text><text x="${LX - 8}" y="${n.y + n.h / 2 + 9}" text-anchor="end">${money(n.value)} · ${pct(n.value, total)}</text></g>`;
-  for (const n of R) g += `<g class="nd" data-side="r" data-id="${esc(n.id)}" ${n.id === OTHER_ID ? '' : 'style="cursor:pointer"'}><rect x="${RX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="var(--src)"/>
-    ${dense ? `<text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 4}"><tspan class="lbl">${esc(short(n.name, 22))}</tspan> ${money(n.value)}</text>`
-      : `<text x="${RX + NW + 8}" y="${n.y + n.h / 2 - 5}" class="lbl">${esc(short(n.name, 26))}</text><text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 9}">${money(n.value)}</text>`}</g>`;
+  const leader = (n, x) => Math.abs(n.ly - (n.y + n.h / 2)) > 2 ? `<path d="M${x} ${n.y + n.h / 2}L${x + (x === RX + NW ? 6 : -6)} ${n.ly}" stroke="var(--muted)" stroke-width="1" fill="none"/>` : '';
+  for (const n of L) g += `<g class="nd" data-side="l" data-id="${esc(n.id)}"><rect x="${LX - 180}" y="${n.ly - pitchL / 2}" width="${180 + NW}" height="${pitchL}" fill="transparent"/><rect x="${LX}" y="${n.y}" width="${NW}" height="${n.h}" rx="${Math.min(3, n.h / 2)}" fill="${n.color}"/>${leader(n, LX)}
+    <text x="${LX - 8}" y="${n.ly - 5}" text-anchor="end" class="lbl">${esc(short(n.name, 24))}</text><text x="${LX - 8}" y="${n.ly + 9}" text-anchor="end">${money(n.value)} · ${pct(n.value, total)}</text></g>`;
+  for (const n of R) g += `<g class="nd" data-side="r" data-id="${esc(n.id)}" ${n.id === OTHER_ID ? '' : 'style="cursor:pointer"'}><rect x="${RX}" y="${n.ly - pitchR / 2}" width="${W - RX}" height="${pitchR}" fill="transparent"/><rect x="${RX}" y="${n.y}" width="${NW}" height="${n.h}" rx="${Math.min(3, n.h / 2)}" fill="var(--src)"/>${leader(n, RX + NW)}
+    ${dense ? `<text x="${RX + NW + 8}" y="${n.ly + 4}"><tspan class="lbl">${esc(short(n.name, 22))}</tspan> ${money(n.value)}</text>`
+      : `<text x="${RX + NW + 8}" y="${n.ly - 5}" class="lbl">${esc(short(n.name, 26))}</text><text x="${RX + NW + 8}" y="${n.ly + 9}">${money(n.value)}</text>`}</g>`;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = g;
   svg.querySelectorAll('tspan.lbl').forEach(t => { t.style.fill = 'var(--fg)'; t.style.fontWeight = 600; });
   svg.querySelectorAll('text').forEach(t => { t.style.fill = t.classList.contains('lbl') ? 'var(--fg)' : 'var(--muted)'; t.style.fontSize = t.classList.contains('lbl') ? '12px' : '11px'; if (t.classList.contains('lbl')) t.style.fontWeight = 600; });
