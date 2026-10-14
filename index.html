@@ -58,6 +58,18 @@
   table.cyc td:first-child, table.cyc th:first-child { position:sticky; left:0; background:var(--bg); }
   table.cyc tr.grp td { font-weight:600; } table.cyc tr.sub td:first-child { padding-left:20px; color:var(--muted); font-weight:400; }
   table.cyc tr.tot td { border-top:2px solid var(--line); }
+  tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
+  .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+  .chip { display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+  .chip button { background:none; color:var(--fg); border:0; padding:4px 10px; cursor:pointer; font-size:12px; } .chip button + button { padding:4px 8px; color:var(--muted); border-left:1px solid var(--line); }
+  dialog { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:16px; width:min(520px, calc(100vw - 32px)); max-height:80vh; }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog[open] { display:flex; flex-direction:column; gap:6px; }
+  .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
+  #vClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
+  .vall { font-weight:600; margin-top:6px; } .vlist { overflow:auto; border-top:1px solid var(--line); }
+  .vlist tr.hl td { background:var(--line); }
   .error { color:var(--neg); }
 </style>
 </head>
@@ -115,6 +127,7 @@
   <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
   <h2>Regular payments</h2>
   <div class="controls"><button id="findRec">Find regular payments</button></div>
+  <div id="regChips" class="chips" hidden></div>
   <div id="recStatus" class="sub">Scans the last 10 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
   <div id="recTools" class="controls" hidden style="margin-top:8px;align-items:center">
     <span id="recSummary" class="sub" style="flex:1"></span>
@@ -139,6 +152,13 @@
   </div>
   <h2>Transactions</h2>
   <table><tbody id="rows"></tbody></table>
+<dialog id="vendorDlg">
+  <div class="dhead"><h3 id="vTitle"></h3><button id="vClose" aria-label="Close">×</button></div>
+  <div id="vSummary" class="sub"></div>
+  <label class="vall"><input type="checkbox" id="vAll"> Every payment to this vendor is a regular</label>
+  <div class="sub">Or tick individual transactions below.</div>
+  <div class="vlist"><table><tbody id="vRows"></tbody></table></div>
+</dialog>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -527,11 +547,59 @@ async function load(force = false) {
     $('status').textContent = '';
     showCacheInfo(rows, meta, added);
     await ensureRegulars(auth);
-    render(); renderFlow(); renderBalanceChart(since, until); renderCycles(auth);
+    render(); renderFlow(); renderBalanceChart(since, until); renderCycles(auth); renderChips();
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
   }
 }
+
+// ---- Manually marking regulars: tap a transaction to see the vendor's history ----
+function renderChips() {
+  const el = $('regChips'), name = k => (lastRows.find(t => vendorKey(t) === k) || {}).description || k;
+  const manual = [...regulars].filter(k => !recRows.some(r => r.key === k));
+  const byVendor = {};
+  for (const t of lastRows) if (regularIds.has(t.id) && !regulars.has(vendorKey(t))) byVendor[vendorKey(t)] = (byVendor[vendorKey(t)] || 0) + 1;
+  const chip = (k, label, kind) => `<span class="chip"><button data-open="${esc(k)}">${esc(label)}</button><button data-rm="${kind}:${esc(k)}" aria-label="Remove ${esc(label)}">×</button></span>`;
+  el.innerHTML = [...manual.map(k => chip(k, name(k), 'p')), ...Object.entries(byVendor).map(([k, n]) => chip(k, `${name(k)} (${n} selected)`, 'i'))].join('');
+  el.hidden = !el.innerHTML;
+}
+
+function openVendor(key, highlightId) {
+  const items = lastRows.filter(t => vendorKey(t) === key).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  if (!items.length) return;
+  const dlg = $('vendorDlg'), whole = regulars.has(key);
+  const total = items.reduce((n, t) => n + t.amount, 0);
+  $('vTitle').textContent = items[0].description;
+  $('vSummary').textContent = `${items.length} transaction${items.length === 1 ? '' : 's'} · net ${money(total)} · ${new Date(items[items.length - 1].createdAt).toLocaleDateString('en-AU')} to ${new Date(items[0].createdAt).toLocaleDateString('en-AU')}`;
+  $('vAll').checked = whole; $('vAll').dataset.key = key;
+  $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}">
+    <td><input type="checkbox" data-id="${esc(t.id)}" aria-label="Regular on ${new Date(t.createdAt).toLocaleDateString('en-AU')}" ${whole || regularIds.has(t.id) ? 'checked' : ''} ${whole ? 'disabled' : ''}></td>
+    <td>${new Date(t.createdAt).toLocaleDateString('en-AU')}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
+  if (!dlg.open) dlg.showModal();
+  const hl = $('vRows').querySelector('.hl'); if (hl) hl.scrollIntoView({ block: 'center' });
+}
+
+$('rows').onclick = e => { const tr = e.target.closest('tr[data-id]'); const t = tr && lastRows.find(x => x.id === tr.dataset.id); if (t) openVendor(vendorKey(t), t.id); };
+$('vClose').onclick = () => $('vendorDlg').close();
+$('vendorDlg').onclick = e => { if (e.target === $('vendorDlg')) $('vendorDlg').close(); };   // click on the backdrop
+$('vAll').onchange = e => {
+  const k = e.target.dataset.key;
+  if (e.target.checked) { regulars.add(k); lastRows.filter(t => vendorKey(t) === k).forEach(t => regularIds.delete(t.id)); } else regulars.delete(k);
+  saveRegulars(); openVendor(k);
+};
+$('vRows').onchange = e => {
+  const id = e.target.dataset.id; if (!id) return;
+  e.target.checked ? regularIds.add(id) : regularIds.delete(id);
+  saveRegulars();
+};
+$('regChips').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.open) return openVendor(b.dataset.open);
+  const [kind, k] = b.dataset.rm.split(/:(.*)/s);
+  if (kind === 'p') regulars.delete(k); else lastRows.filter(t => vendorKey(t) === k).forEach(t => regularIds.delete(t.id));
+  saveRegulars();
+};
 
 // ---- Pay cycles ----
 // The salary is the recurring income payee with the highest monthly total (override via the dropdown).
@@ -556,7 +624,7 @@ function buildCycles(rows, salaryKey, nCycles) {
     const d = dayIdx(Date.parse(t.createdAt));
     if (d < first) continue;
     const c = cycles.find(c => d >= c.start && d < c.end); if (!c) continue;
-    const g = regulars.has(key) ? 'R:' + t.description : 'C:' + (t.category || '');
+    const g = isRegular(t) ? 'R:' + t.description : 'C:' + (t.category || '');
     c.groups[g] = (c.groups[g] || 0) + -t.amount; c.total += -t.amount;
   }
   return cycles;
@@ -706,12 +774,20 @@ function detectRecurring(txns, now = new Date(), income = false) {
 }
 
 // Which detected payees the user has confirmed as regular (persisted per token; survives cache clears)
-let recRows = [], regulars = new Set(), regKey = null;
+let recRows = [], regulars = new Set(), regKey = null, regularIds = new Set();
+const vendorKey = t => t.description.trim().toUpperCase();
+const isRegular = t => regulars.has(vendorKey(t)) || regularIds.has(t.id);
 const loadRegulars = () => { try { return new Set(JSON.parse(localStorage.getItem(regKey) || '[]')); } catch { return new Set(); } };
-const saveRegulars = () => { try { localStorage.setItem(regKey, JSON.stringify([...regulars])); } catch {} renderCycles(); };
+const saveRegulars = () => {
+  try { localStorage.setItem(regKey, JSON.stringify([...regulars])); localStorage.setItem(regKey + '_ids', JSON.stringify([...regularIds])); } catch {}
+  renderCycles(); renderChips(); if (recRows.length) renderRecurring(); render();
+};
 async function ensureRegulars(auth) {
   const k = 'up_regulars_' + await tokenKey(auth.token);
-  if (k !== regKey) { regKey = k; regulars = loadRegulars(); }
+  if (k !== regKey) {
+    regKey = k; regulars = loadRegulars();
+    try { regularIds = new Set(JSON.parse(localStorage.getItem(k + '_ids') || '[]')); } catch { regularIds = new Set(); }
+  }
 }
 
 function renderRecurring() {
@@ -841,8 +917,8 @@ function render() {
   const out = real.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0);
   $('in').textContent = money(inn); $('out').textContent = money(out);
   $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
-  $('rows').innerHTML = list.map(t => `<tr>
-    <td>${esc(t.description)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
+  $('rows').innerHTML = list.map(t => `<tr class="tap" data-id="${esc(t.id)}">
+    <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
       <div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${t.category ? ' · ' + esc(t.category) : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
 }
