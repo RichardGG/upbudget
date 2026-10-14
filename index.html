@@ -73,7 +73,7 @@
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
   .chip { display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
   .chip button { background:none; color:var(--fg); border:0; padding:4px 10px; cursor:pointer; font-size:12px; } .chip button + button { padding:4px 8px; color:var(--muted); border-left:1px solid var(--line); }
-  dialog { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:16px; width:min(520px, calc(100vw - 32px)); max-height:80vh; }
+  dialog { box-sizing:border-box; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:16px; width:min(520px, calc(100vw - 32px)); max-height:80vh; }
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
@@ -81,6 +81,11 @@
   #vClose, #cClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
   .vall { font-weight:600; margin-top:6px; } .vlist { overflow:auto; border-top:1px solid var(--line); }
   .vlist tr.hl td { background:var(--line); }
+  .scroll { overflow-x:auto; max-width:100%; }
+  @media (max-width: 600px) {
+    table.proj { font-size:12px; } table.proj th, table.proj td { padding:4px 3px; }
+    #recTable { font-size:13px; min-width:560px; }
+  }
   .error { color:var(--neg); }
 </style>
 </head>
@@ -124,7 +129,7 @@
     <div class="chart"><svg id="balChart" role="img" tabindex="0" aria-label="Home loan, offset and remaining debt balances over time"></svg><div id="balTip" class="tip" hidden></div></div>
     <div id="balNote" class="sub"></div>
     <div id="projBox" hidden>
-      <table><thead><tr><th>Projection (straight line)</th><th class="amt">Debt falling by</th><th class="amt">Debt remaining reaches $0</th><th class="amt">Loan balance alone reaches $0</th></tr></thead><tbody id="projRows"></tbody></table>
+      <div class="scroll"><table class="proj"><thead><tr><th>Projection (straight line)</th><th class="amt">Debt falling by</th><th class="amt">Debt remaining reaches $0</th><th class="amt">Loan balance alone reaches $0</th></tr></thead><tbody id="projRows"></tbody></table></div>
       <div class="sub">Assumes the pace of the period continues unchanged, including interest and the rate you add to savings. A rough guide only, not financial advice.</div>
     </div>
     <details><summary>Table view</summary><table><thead><tr><th>Month end</th><th class="amt">Loan</th><th class="amt">Offset</th><th class="amt">Remaining</th></tr></thead><tbody id="balTable"></tbody></table></details>
@@ -152,10 +157,10 @@
     <span id="recSummary" class="sub" style="flex:1"></span>
     <label class="sub"><input type="checkbox" id="recOnly"> Confirmed only</label>
   </div>
-  <table id="recTable" hidden>
+  <div class="scroll"><table id="recTable" hidden>
     <thead><tr><th><input type="checkbox" id="recAll" aria-label="Select all"></th><th>Payee</th><th>Frequency</th><th class="amt">Amount</th><th class="amt">Last paid</th><th class="amt">Next due</th><th class="amt">≈ per month</th></tr></thead>
     <tbody id="recRows"></tbody>
-  </table>
+  </table></div>
   <h2>Spending per pay cycle</h2>
   <div class="controls" style="align-items:center">
     <label class="sub">Salary: <select id="salarySel"></select></label>
