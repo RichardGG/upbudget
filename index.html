@@ -66,11 +66,9 @@
   tr.gh { cursor:pointer; } tr.gh td { background:var(--line); font-weight:600; position:sticky; top:0; z-index:1; } tr.gh .sub { font-weight:400; } .chev { display:inline-block; width:1em; color:var(--muted); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
-  tr.lunch td { background:var(--lunch); }
-  tr.lunch.tap:hover td { background:var(--line); }
   .lunch-tag { background:var(--lunchtag); color:#1c1c28; }
-  :root { --lunch:rgba(237,161,0,.16); --lunchtag:#eda100; }
-  @media (prefers-color-scheme: dark) { :root { --lunch:rgba(201,133,0,.22); --lunchtag:#c98500; } }
+  :root { --lunchtag:#eda100; }
+  @media (prefers-color-scheme: dark) { :root { --lunchtag:#c98500; } }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
   .chip { display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
   .chip button { background:none; color:var(--fg); border:0; padding:4px 10px; cursor:pointer; font-size:12px; } .chip button + button { padding:4px 8px; color:var(--muted); border-left:1px solid var(--line); }
@@ -78,6 +76,9 @@
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
+  #rows tr.tap td:first-child { padding-left:26px; }
+  .cat { display:inline-block; border-radius:999px; padding:0 8px; font-size:11px; line-height:18px; vertical-align:baseline; background:hsl(var(--h) 70% 90%); color:hsl(var(--h) 65% 26%); }
+  @media (prefers-color-scheme: dark) { .cat { background:hsl(var(--h) 38% 24%); color:hsl(var(--h) 75% 82%); } }
   .catbtn { background:none; border:0; color:var(--accent); padding:0; cursor:pointer; font-size:12px; }
   #vClose, #cClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
   .vall { font-weight:600; margin-top:6px; } .vlist { overflow:auto; border-top:1px solid var(--line); }
@@ -630,7 +631,7 @@ function openVendor(key, highlightId) {
   $('vAll').checked = whole; $('vAll').dataset.key = key;
   $('vRows').innerHTML = items.map(t => `<tr class="${t.id === highlightId ? 'hl' : ''}${isLunch(t) ? ' lunch' : ''}">
     <td><input type="checkbox" data-id="${esc(t.id)}" aria-label="Regular on ${new Date(t.createdAt).toLocaleDateString('en-AU')}" ${whole || regularIds.has(t.id) ? 'checked' : ''} ${whole ? 'disabled' : ''}></td>
-    <td>${when(t)}${lunchTag(t)}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${esc(effCat(t) ? catName(effCat(t)) : 'Uncategorised')}${catStore.txns[t.id] !== undefined ? '*' : ''} ✎</button></div></td>
+    <td>${when(t)}${lunchTag(t)}<div class="sub">${esc(t.account)}${t.message ? ' · ' + esc(t.message) : ''} · <button class="catbtn" data-cattx="${esc(t.id)}">${effCat(t) ? catChip(effCat(t), catStore.txns[t.id] !== undefined ? '*' : '') : 'Uncategorised'} ✎</button></div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`).join('');
   $('vCat').innerHTML = catOptions(catStore.vendors[key] ?? '', `Up's category`);
   $('vCat').dataset.key = key;
@@ -873,6 +874,18 @@ function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
 
 const catLookup = id => catStore.custom[id] || lastCategories[id];
 const catName = id => id ? (catLookup(id)?.name || id) : 'Uncategorised';
+// Every category/subcategory gets its own colour: hues are handed out in golden-angle steps (maximally spread) the first
+// time a category is seen, and remembered so colours stay the same between visits. The name is always shown too.
+let hueMap = {};
+try { hueMap = JSON.parse(localStorage.getItem('up_cat_hues') || '{}'); } catch {}
+const catHue = id => {
+  if (hueMap[id] === undefined) {
+    hueMap[id] = Math.round((Object.keys(hueMap).length * 137.508 + 20) % 360);
+    try { localStorage.setItem('up_cat_hues', JSON.stringify(hueMap)); } catch {}
+  }
+  return hueMap[id];
+};
+const catChip = (id, star = '') => id ? `<span class="cat" style="--h:${catHue(id)}" title="${esc(catLookup(id)?.parent ? catName(catLookup(id).parent) + ' › ' : '')}${esc(catName(id))}">${esc(catName(id))}${star}</span>` : '';
 const parentOf = id => (id && catLookup(id)?.parent) || id || '';
 const cycleLabel = c => new Date(c.start * DAY).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const CAT_COLORS = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8'];
@@ -998,7 +1011,7 @@ function openCycleTxns(spec, ci) {
   $('cTitle').textContent = labelFor(spec);
   $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
     ` · ${items.length} transaction${items.length === 1 ? '' : 's'} · ${money(total)}`;
-  $('cRows').innerHTML = items.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}<div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
+  $('cRows').innerHTML = items.map(t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}<div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + catChip(effCat(t)) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
   if (!$('cycleDlg').open) $('cycleDlg').showModal();
 }
 $('cycleRows').onclick = e => { const td = e.target.closest('td[data-spec]'); if (td) openCycleTxns(td.dataset.spec, td.dataset.c); };
@@ -1196,7 +1209,7 @@ const groupOpen = new Map();   // group key → user's choice; unset = only the 
 let groupKeys = [];
 const txRow = t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
     <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + esc(catName(effCat(t))) : ''}${isCatOverridden(t) ? '*' : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
+      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + catChip(effCat(t), isCatOverridden(t) ? '*' : '') : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
     <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`;
 
 function render() {
