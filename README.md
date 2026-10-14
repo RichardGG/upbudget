@@ -27,6 +27,7 @@ history you newly ask for. Use **Clear cache & reload** to refetch everything. N
 - Last 10 years by default (up to 30,000 transactions), editable date range
 - Filter by account, search by description/message/category
 - Money in / out / net totals (internal transfers excluded)
+- Home loan offset: loan balance minus the combined balance of all other accounts, with debt remaining
 - Money flow diagram: external income → accounts, plus net transfers between accounts
 - Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 10 years, with typical amount, next due date and estimated monthly cost
   - Tick the payees that really are regular; choices are saved in your browser and can be filtered with "Confirmed only"
