@@ -143,7 +143,7 @@
     <div class="controls">
       <select id="account" aria-label="Account"><option value="">All accounts</option></select>
       <input id="q" type="search" placeholder="Search…">
-      <label class="sub" style="align-self:center"><input type="checkbox" id="regOnly"> Regulars only</label>
+      <select id="regMode" aria-label="Regular payments"><option value="all">All payments</option><option value="only">Regulars only</option><option value="hide">Hide regulars</option></select>
       <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
     </div>
   <div class="sub" style="margin-bottom:4px">Grouped by pay cycle. <a href="#" id="expandAll">Expand all</a> · <a href="#" id="collapseAll">Collapse all</a></div>
@@ -1257,8 +1257,8 @@ const txRow = (t, cyc) => {
 };
 
 function render() {
-  const q = $('q').value.toLowerCase(), acct = $('account').value, regOnly = $('regOnly').checked;
-  const list = all.filter(t => (!acct || t.account === acct) && (!regOnly || isRegular(t)) && (catFilter === null || (effCat(t) || '') === catFilter) &&
+  const q = $('q').value.toLowerCase(), acct = $('account').value, regMode = $('regMode').value;
+  const list = all.filter(t => (!acct || t.account === acct) && (regMode === 'all' || (regMode === 'only') === isRegular(t)) && (catFilter === null || (effCat(t) || '') === catFilter) &&
     (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
@@ -1294,7 +1294,7 @@ function render() {
   const groups = new Map();
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
-  const filtering = Boolean(q || regOnly || catFilter !== null);
+  const filtering = Boolean(q || regMode !== 'all' || catFilter !== null);
   renderCatFilterChip();
   let html = '', first = true;
   for (const g of groups.values()) {
@@ -1359,7 +1359,8 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
   const shown = $('recOnly').checked ? recRows.filter(r => regulars.has(r.key)) : recRows;
   shown.forEach(r => e.target.checked ? regulars.add(r.key) : regulars.delete(r.key)); saveRegulars(); renderRecurring();
 };
-$('q').oninput = $('account').onchange = $('regOnly').onchange = render;
+try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; } catch {}
+$('q').oninput = $('account').onchange = $('regMode').onchange = () => { try { localStorage.setItem('up_reg_mode', $('regMode').value); } catch {} render(); };
 $('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); render(); };
 $('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); render(); };
 // ---- Tabs ----
