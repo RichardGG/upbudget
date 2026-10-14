@@ -63,7 +63,7 @@
   .scale { display:flex; align-items:center; gap:6px; margin:4px 0; } .grad { display:inline-block; width:120px; height:10px; border-radius:5px; border:1px solid var(--line); background:linear-gradient(90deg, color-mix(in srgb, var(--cold) 45%, transparent), transparent, color-mix(in srgb, var(--hot) 45%, transparent)); }
   table.cyc tr.memo td { font-style:italic; border-top:1px dashed var(--line); } table.cyc tr.memo td:first-child { color:var(--muted); }
   table.cyc tr.tot td { border-top:2px solid var(--line); }
-  tr.gh { cursor:pointer; } tr.gh td { background:var(--line); font-weight:600; position:sticky; top:0; z-index:1; } tr.gh .sub { font-weight:400; } .chev { display:inline-block; width:1em; color:var(--muted); }
+  tr.gh { cursor:pointer; } tr.gh td { background:var(--line); font-weight:600; position:sticky; top:42px; z-index:1; }   /* sits just under the sticky tab bar */ tr.gh .sub { font-weight:400; } .chev { display:inline-block; width:1em; color:var(--muted); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
   .lunch-tag { background:var(--lunchtag); color:#1c1c28; }
@@ -77,6 +77,13 @@
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
   #rows tr.tap td:first-child { padding-left:26px; }
+  .tabs { display:flex; gap:2px; overflow-x:auto; position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line); margin:0 0 12px; scrollbar-width:none; }
+  .tabs::-webkit-scrollbar { display:none; }
+  .tabs button { flex:none; background:none; color:var(--muted); border:0; border-bottom:3px solid transparent; border-radius:0; padding:10px 14px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  .tabs button[hidden] { display:none; }
+  .tabs button[aria-selected="true"] { color:var(--fg); font-weight:600; border-bottom-color:var(--accent); }
+  .tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  [role="tabpanel"][hidden] { display:none; }
   .tipf { position:fixed; }
   #catFilterChip { display:inline-flex; font-size:12px; } #catFilterChip[hidden] { display:none; } #catFilterClear { background:none; color:var(--muted); border:0; padding:0 2px; cursor:pointer; font-size:16px; }
   .brk i { cursor:pointer; } .brk:hover i { opacity:.6; } .brk i:hover, .brk i:focus-visible { opacity:1; } .brk i.dim { opacity:.3; } .brk i:focus-visible { outline:2px solid var(--fg); outline-offset:-2px; }
@@ -116,19 +123,80 @@
   <div class="controls">
     <input id="since" type="date" aria-label="From">
     <input id="until" type="date" aria-label="To">
-    <select id="account" aria-label="Account"><option value="">All accounts</option></select>
-    <input id="q" type="search" placeholder="Search…">
-    <label class="sub" style="align-self:center"><input type="checkbox" id="regOnly"> Regulars only</label>
-    <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
     <button id="load">Load</button>
   </div>
-  <div class="sub" style="margin-bottom:12px"><span id="cacheInfo">Nothing cached yet.</span> <a href="#" id="clearCache">Clear cache &amp; reload</a></div>
-  <div class="summary">
-    <div><span>Money in</span><b id="in" class="pos">–</b></div>
-    <div><span>Money out</span><b id="out" class="neg">–</b></div>
-    <div><span>Net</span><b id="net">–</b></div>
-  </div>
+  <div class="sub" style="margin-bottom:8px"><span id="cacheInfo">Nothing cached yet.</span> <a href="#" id="clearCache">Clear cache &amp; reload</a></div>
   <div id="status"></div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-transactions" data-tab="transactions">Transactions</button>
+    <button role="tab" id="tab-cycles" data-tab="cycles">Pay cycles</button>
+    <button role="tab" id="tab-flows" data-tab="flows">Flows</button>
+    <button role="tab" id="tab-regulars" data-tab="regulars">Regulars</button>
+    <button role="tab" id="tab-loan" data-tab="loan" hidden>Home loan</button>
+  </nav>
+  <div role="tabpanel" id="panel-transactions" aria-labelledby="tab-transactions">
+    <div class="summary">
+      <div><span>Money in</span><b id="in" class="pos">–</b></div>
+      <div><span>Money out</span><b id="out" class="neg">–</b></div>
+      <div><span>Net</span><b id="net">–</b></div>
+    </div>
+    <div class="controls">
+      <select id="account" aria-label="Account"><option value="">All accounts</option></select>
+      <input id="q" type="search" placeholder="Search…">
+      <label class="sub" style="align-self:center"><input type="checkbox" id="regOnly"> Regulars only</label>
+      <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
+    </div>
+  <div class="sub" style="margin-bottom:4px">Grouped by pay cycle. <a href="#" id="expandAll">Expand all</a> · <a href="#" id="collapseAll">Collapse all</a></div>
+  <table><tbody id="rows"></tbody></table>
+  </div>
+  <div role="tabpanel" id="panel-cycles" aria-labelledby="tab-cycles" hidden>
+  <h2>Spending per pay cycle</h2>
+  <div class="controls" style="align-items:center">
+    <label class="sub">Salary: <select id="salarySel"></select></label>
+    <label class="sub">Cycles: <select id="cycleN"><option>6</option><option selected>12</option><option>26</option><option>52</option></select></label>
+    <label class="sub"><input type="checkbox" id="cycleSubs"> Show subcategories</label>
+    <label class="sub"><input type="checkbox" id="cycleHideReg"> Hide regular payments</label>
+  </div>
+  <div id="cycleMsg" class="sub"></div>
+  <div id="cycleBody" hidden>
+    <div class="legend" id="cycleLegend"></div>
+    <div class="chart"><svg id="cycleChart" role="img" aria-label="Spending per pay cycle by category" style="width:100%;height:auto;display:block"></svg><div id="cycleTip" class="tip" hidden></div></div>
+    <div class="sub">Transfers between your accounts are excluded. * = current cycle (in progress, not in the average or shading).</div>
+    <div class="sub scale"><span>Shading vs each row's average:</span> <span>spent less</span><i class="grad"></i><span>spent more</span></div>
+    <div style="overflow-x:auto"><table class="cyc"><thead id="cycleHead"></thead><tbody id="cycleRows"></tbody></table></div>
+  </div>
+  </div>
+  <div role="tabpanel" id="panel-flows" aria-labelledby="tab-flows" hidden>
+  <h2>Money flow</h2>
+  <div class="legend">
+    <span><i style="background:var(--src)"></i>External income</span>
+    <span><i style="background:var(--xfer)"></i>Transfers between accounts (net)</span>
+  </div>
+  <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
+  <h2>Spending flow</h2>
+  <div class="controls" style="align-items:center">
+    <label class="sub">Top vendors: <select id="sfTop"><option>8</option><option selected>15</option><option>25</option><option>50</option><option>100</option></select></label>
+    <label class="sub"><input type="checkbox" id="sfSubs"> Subcategories</label>
+    <span class="sub">Where outgoing money went in the date range above. Tap a vendor to review it.</span>
+  </div>
+  <div class="chart"><svg id="spendFlow" role="img" aria-label="Outgoing spending by category and vendor" style="width:100%;height:auto;display:block"></svg><div id="sfTip" class="tip" hidden></div></div>
+  <details><summary>Table view</summary><table><thead><tr><th>Category</th><th>Vendor</th><th class="amt">Amount</th></tr></thead><tbody id="sfTable"></tbody></table></details>
+  </div>
+  <div role="tabpanel" id="panel-regulars" aria-labelledby="tab-regulars" hidden>
+  <h2>Regular payments</h2>
+  <div class="controls"><button id="findRec">Find regular payments</button></div>
+  <div id="regChips" class="chips" hidden></div>
+  <div id="recStatus" class="sub">Scans the last 10 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
+  <div id="recTools" class="controls" hidden style="margin-top:8px;align-items:center">
+    <span id="recSummary" class="sub" style="flex:1"></span>
+    <label class="sub"><input type="checkbox" id="recOnly"> Confirmed only</label>
+  </div>
+  <div class="scroll"><table id="recTable" hidden>
+    <thead><tr><th><input type="checkbox" id="recAll" aria-label="Select all"></th><th>Payee</th><th>Frequency</th><th class="amt">Amount</th><th class="amt">Last paid</th><th class="amt">Next due</th><th class="amt">≈ per month</th></tr></thead>
+    <tbody id="recRows"></tbody>
+  </table></div>
+  </div>
+  <div role="tabpanel" id="panel-loan" aria-labelledby="tab-loan" hidden>
   <section id="offsetSection" hidden>
     <h2>Home loan offset</h2>
     <div class="summary" id="offsetStats"></div>
@@ -150,50 +218,7 @@
     <details><summary>Table view</summary><table><thead><tr><th>Month end</th><th class="amt">Loan</th><th class="amt">Offset</th><th class="amt">Remaining</th></tr></thead><tbody id="balTable"></tbody></table></details>
     <details><summary>Account balances</summary><table><tbody id="offsetDetail"></tbody></table></details>
   </section>
-  <h2>Money flow</h2>
-  <div class="legend">
-    <span><i style="background:var(--src)"></i>External income</span>
-    <span><i style="background:var(--xfer)"></i>Transfers between accounts (net)</span>
   </div>
-  <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
-  <h2>Spending flow</h2>
-  <div class="controls" style="align-items:center">
-    <label class="sub">Top vendors: <select id="sfTop"><option>8</option><option selected>15</option><option>25</option><option>50</option><option>100</option></select></label>
-    <label class="sub"><input type="checkbox" id="sfSubs"> Subcategories</label>
-    <span class="sub">Where outgoing money went in the date range above. Tap a vendor to review it.</span>
-  </div>
-  <div class="chart"><svg id="spendFlow" role="img" aria-label="Outgoing spending by category and vendor" style="width:100%;height:auto;display:block"></svg><div id="sfTip" class="tip" hidden></div></div>
-  <details><summary>Table view</summary><table><thead><tr><th>Category</th><th>Vendor</th><th class="amt">Amount</th></tr></thead><tbody id="sfTable"></tbody></table></details>
-  <h2>Regular payments</h2>
-  <div class="controls"><button id="findRec">Find regular payments</button></div>
-  <div id="regChips" class="chips" hidden></div>
-  <div id="recStatus" class="sub">Scans the last 10 years for payees charged at a steady weekly, fortnightly, monthly, quarterly or yearly interval.</div>
-  <div id="recTools" class="controls" hidden style="margin-top:8px;align-items:center">
-    <span id="recSummary" class="sub" style="flex:1"></span>
-    <label class="sub"><input type="checkbox" id="recOnly"> Confirmed only</label>
-  </div>
-  <div class="scroll"><table id="recTable" hidden>
-    <thead><tr><th><input type="checkbox" id="recAll" aria-label="Select all"></th><th>Payee</th><th>Frequency</th><th class="amt">Amount</th><th class="amt">Last paid</th><th class="amt">Next due</th><th class="amt">≈ per month</th></tr></thead>
-    <tbody id="recRows"></tbody>
-  </table></div>
-  <h2>Spending per pay cycle</h2>
-  <div class="controls" style="align-items:center">
-    <label class="sub">Salary: <select id="salarySel"></select></label>
-    <label class="sub">Cycles: <select id="cycleN"><option>6</option><option selected>12</option><option>26</option><option>52</option></select></label>
-    <label class="sub"><input type="checkbox" id="cycleSubs"> Show subcategories</label>
-    <label class="sub"><input type="checkbox" id="cycleHideReg"> Hide regular payments</label>
-  </div>
-  <div id="cycleMsg" class="sub"></div>
-  <div id="cycleBody" hidden>
-    <div class="legend" id="cycleLegend"></div>
-    <div class="chart"><svg id="cycleChart" role="img" aria-label="Spending per pay cycle by category" style="width:100%;height:auto;display:block"></svg><div id="cycleTip" class="tip" hidden></div></div>
-    <div class="sub">Transfers between your accounts are excluded. * = current cycle (in progress, not in the average or shading).</div>
-    <div class="sub scale"><span>Shading vs each row's average:</span> <span>spent less</span><i class="grad"></i><span>spent more</span></div>
-    <div style="overflow-x:auto"><table class="cyc"><thead id="cycleHead"></thead><tbody id="cycleRows"></tbody></table></div>
-  </div>
-  <h2>Transactions</h2>
-  <div class="sub" style="margin-bottom:4px">Grouped by pay cycle. <a href="#" id="expandAll">Expand all</a> · <a href="#" id="collapseAll">Collapse all</a></div>
-  <table><tbody id="rows"></tbody></table>
 <dialog id="cycleDlg">
   <div class="dhead"><h3 id="cTitle"></h3><button id="cClose" aria-label="Close">×</button></div>
   <div id="cSub" class="sub"></div>
@@ -332,6 +357,9 @@ async function fetchAccounts({ token, base }) {
 function renderOffset(info) {
   const loans = info.filter(a => a.type === 'HOME_LOAN'), others = info.filter(a => a.type !== 'HOME_LOAN');
   $('offsetSection').hidden = !loans.length;
+  $('tab-loan').hidden = !loans.length;
+  if (!loans.length && $('panel-loan') && !$('panel-loan').hidden) showTab('transactions');
+  else if (loans.length && wantTab === 'loan' && $('panel-loan').hidden) showTab('loan', false);
   if (!loans.length) return;
   const debt = loans.reduce((n, a) => n - a.balance, 0);           // loan balances are negative when owed
   const offset = others.reduce((n, a) => n + a.balance, 0);
@@ -1334,6 +1362,28 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
 $('q').oninput = $('account').onchange = $('regOnly').onchange = render;
 $('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); render(); };
 $('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); render(); };
+// ---- Tabs ----
+const TABS = ['transactions', 'cycles', 'flows', 'regulars', 'loan'];
+let wantTab = 'transactions';   // the tab asked for, kept even while it's unavailable (the home loan tab only appears once accounts load)
+function showTab(name, updateHash = true) {
+  if (TABS.includes(name)) wantTab = name;
+  if (!TABS.includes(name) || $('tab-' + name).hidden) name = 'transactions';
+  for (const t of TABS) { $('tab-' + t).setAttribute('aria-selected', t === name); $('tab-' + t).tabIndex = t === name ? 0 : -1; $('panel-' + t).hidden = t !== name; }
+  try { localStorage.setItem('up_tab', name); } catch {}
+  if (updateHash && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+}
+document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) showTab(b.dataset.tab); });
+document.querySelector('.tabs').addEventListener('keydown', e => {
+  const vis = TABS.filter(t => !$('tab-' + t).hidden), i = vis.indexOf(document.activeElement.dataset?.tab);
+  if (i < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const n = e.key === 'Home' ? 0 : e.key === 'End' ? vis.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + vis.length) % vis.length;
+  showTab(vis[n]); $('tab-' + vis[n]).focus(); e.preventDefault();
+});
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1), false));
+// Charts drawn while their tab was hidden are fine (they scale with the viewBox); only the home-loan tab depends on having a loan
+let startTab = location.hash.slice(1); try { startTab ||= localStorage.getItem('up_tab') || ''; } catch {}
+showTab(startTab || 'transactions', false);
+
 if ($('token').value) load();
 </script>
 </body>

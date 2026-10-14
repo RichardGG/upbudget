@@ -22,6 +22,10 @@ Transactions are cached in the browser (IndexedDB, one cache per token), so the 
 history and later loads only fetch the last 14 days (to pick up pending transactions settling), plus any older
 history you newly ask for. Use **Clear cache & reload** to refetch everything. Nothing leaves your browser.
 
+## Views
+
+The page is split into tabs: **Transactions**, **Pay cycles**, **Flows** (money and spending flow), **Regulars**, and **Home loan** (only shown if you have a home loan account). The date range, Load button and cache status stay at the top and apply to every tab. The selected tab is remembered and can be linked to (e.g. `#cycles`).
+
 ## Features
 
 - Last 10 years by default (up to 30,000 transactions), editable date range
