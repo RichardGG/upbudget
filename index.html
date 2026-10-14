@@ -51,6 +51,13 @@
   .tip .k { display:inline-block; width:12px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; }
   .tip .d { color:var(--muted); margin-bottom:4px; }
   .legend .k { display:inline-block; width:14px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+  :root { --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#6250d6; --c8:#e34948; }
+  @media (prefers-color-scheme: dark) { :root { --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#e66767; } }
+  #cycleChart text { fill:var(--muted); font-size:11px; }
+  table.cyc { font-size:12px; } table.cyc td, table.cyc th { white-space:nowrap; padding:4px 6px; }
+  table.cyc td:first-child, table.cyc th:first-child { position:sticky; left:0; background:var(--bg); }
+  table.cyc tr.grp td { font-weight:600; } table.cyc tr.sub td:first-child { padding-left:20px; color:var(--muted); font-weight:400; }
+  table.cyc tr.tot td { border-top:2px solid var(--line); }
   .error { color:var(--neg); }
 </style>
 </head>
@@ -117,6 +124,19 @@
     <thead><tr><th><input type="checkbox" id="recAll" aria-label="Select all"></th><th>Payee</th><th>Frequency</th><th class="amt">Amount</th><th class="amt">Last paid</th><th class="amt">Next due</th><th class="amt">≈ per month</th></tr></thead>
     <tbody id="recRows"></tbody>
   </table>
+  <h2>Spending per pay cycle</h2>
+  <div class="controls" style="align-items:center">
+    <label class="sub">Salary: <select id="salarySel"></select></label>
+    <label class="sub">Cycles: <select id="cycleN"><option>6</option><option selected>12</option><option>26</option><option>52</option></select></label>
+    <label class="sub"><input type="checkbox" id="cycleSubs"> Show subcategories</label>
+  </div>
+  <div id="cycleMsg" class="sub"></div>
+  <div id="cycleBody" hidden>
+    <div class="legend" id="cycleLegend"></div>
+    <div class="chart"><svg id="cycleChart" role="img" aria-label="Spending per pay cycle by category" style="width:100%;height:auto;display:block"></svg><div id="cycleTip" class="tip" hidden></div></div>
+    <div class="sub">Transfers between your accounts are excluded. * = current cycle (in progress, not in the average).</div>
+    <div style="overflow-x:auto"><table class="cyc"><thead id="cycleHead"></thead><tbody id="cycleRows"></tbody></table></div>
+  </div>
   <h2>Transactions</h2>
   <table><tbody id="rows"></tbody></table>
 </main>
@@ -438,7 +458,7 @@ async function fetchRange({ token, base }, sinceMs, untilMs, maxPages, onProgres
   return { rows, more: Boolean(url) };
 }
 
-let lastAccountInfo = [], lastRows = [];
+let lastAccountInfo = [], lastRows = [], lastCategories = {};
 const DAY = 864e5, OVERLAP = 14 * DAY; // re-fetch recent days so held/pending transactions get their final state
 
 // Bring the cache up to date and make sure it reaches back to wantSinceMs. Only fetches what's missing.
@@ -448,6 +468,11 @@ async function sync(auth, wantSinceMs, { force = false, onProgress } = {}) {
   const accountInfo = await fetchAccounts(auth);
   const accounts = Object.fromEntries(accountInfo.map(a => [a.id, a.name]));
   await c.setMeta('accounts', accounts);
+  try {
+    const cats = await upGet(`${auth.base}/categories`, auth.token);
+    lastCategories = Object.fromEntries(cats.data.map(x => [x.id, { name: x.attributes.name, parent: x.relationships.parent?.data?.id || null }]));
+    await c.setMeta('categories', lastCategories);
+  } catch { lastCategories = (await c.getMeta('categories')) || lastCategories; }
   renderOffset(accountInfo);
   lastAccountInfo = accountInfo;
   let meta = await c.getMeta('meta'), added = 0;
@@ -501,10 +526,136 @@ async function load(force = false) {
     $('account').value = accts.includes(cur) ? cur : '';
     $('status').textContent = '';
     showCacheInfo(rows, meta, added);
-    render(); renderFlow(); renderBalanceChart(since, until);
+    await ensureRegulars(auth);
+    render(); renderFlow(); renderBalanceChart(since, until); renderCycles(auth);
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
   }
+}
+
+// ---- Pay cycles ----
+// The salary is the recurring income payee with the highest monthly total (override via the dropdown).
+function findSalaryCandidates(rows) {
+  const since = Date.now() - 2 * 365 * DAY;
+  return detectRecurring(rows.filter(t => Date.parse(t.createdAt) >= since), new Date(), true)
+    .filter(r => ['Weekly', 'Fortnightly', 'Monthly'].includes(r.freq)).sort((a, b) => b.monthly - a.monthly);
+}
+
+function buildCycles(rows, salaryKey, nCycles) {
+  const sal = rows.filter(t => t.amount > 0 && !t.isTransfer && t.status !== 'HELD' && t.description.trim().toUpperCase() === salaryKey);
+  if (!sal.length) return [];
+  const typical = median(sal.map(t => t.amount)), paydays = [...new Set(sal.filter(t => t.amount >= typical * 0.5).map(t => dayIdx(Date.parse(t.createdAt))))].sort((a, b) => a - b);
+  const today = dayIdx(Date.now());
+  let cycles = paydays.map((d, i) => ({ start: d, end: i + 1 < paydays.length ? paydays[i + 1] : Math.max(today + 1, d + 1), inProgress: i + 1 === paydays.length, groups: {}, total: 0 }));
+  cycles = cycles.slice(-nCycles);
+  const first = cycles[0].start;
+  for (const t of rows) {
+    if (t.amount >= 0 || t.isTransfer) continue;
+    const key = t.description.trim().toUpperCase();
+    if (key === salaryKey) continue;
+    const d = dayIdx(Date.parse(t.createdAt));
+    if (d < first) continue;
+    const c = cycles.find(c => d >= c.start && d < c.end); if (!c) continue;
+    const g = regulars.has(key) ? 'R:' + t.description : 'C:' + (t.category || '');
+    c.groups[g] = (c.groups[g] || 0) + -t.amount; c.total += -t.amount;
+  }
+  return cycles;
+}
+
+const catName = id => id ? (lastCategories[id]?.name || id) : 'Uncategorised';
+const parentOf = id => (id && lastCategories[id]?.parent) || id || '';
+const cycleLabel = c => new Date(c.start * DAY).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const CAT_COLORS = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8'];
+
+function renderCycles(auth) {
+  const sec = $('cycleSection');
+  const cands = findSalaryCandidates(lastRows);
+  const saved = (() => { try { return localStorage.getItem('up_salary_' + regKey) || ''; } catch { return ''; } })();
+  const key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
+  $('salarySel').innerHTML = cands.map(c => `<option value="${esc(c.key)}" ${c.key === key ? 'selected' : ''}>${esc(c.name)} (${c.freq.toLowerCase()}, ~${money(c.amount)})</option>`).join('');
+  if (!key) { $('cycleMsg').textContent = 'No regular salary found yet (needs a weekly, fortnightly or monthly deposit at least 3 times in the last 2 years).'; $('cycleBody').hidden = true; return; }
+  const cycles = buildCycles(lastRows, key, Number($('cycleN').value));
+  $('cycleBody').hidden = cycles.length < 1;
+  $('cycleMsg').textContent = cycles.length ? `Pay cycles run from one ${cands.find(c => c.key === key).name} deposit to the next. ${regulars.size ? '' : 'Tick regular payments above to show them separately.'}` : 'Not enough salary deposits to form a pay cycle.';
+  if (!cycles.length) return;
+
+  // Groups: regular payees, then categories rolled up to their parent (sub-rows in the table)
+  const all = {};  // key → total
+  cycles.forEach(c => { for (const [g, v] of Object.entries(c.groups)) all[g] = (all[g] || 0) + v; });
+  const regKeys = Object.keys(all).filter(g => g[0] === 'R').sort((a, b) => all[b] - all[a]);
+  const catKeys = Object.keys(all).filter(g => g[0] === 'C');
+  const parents = {};   // parentId → { total, kids: [childKey] }
+  for (const g of catKeys) { const par = parentOf(g.slice(2)); (parents[par] ||= { total: 0, kids: [] }).total += all[g]; parents[par].kids.push(g); }
+  const parentIds = Object.keys(parents).sort((a, b) => (a === '') - (b === '') || parents[b].total - parents[a].total);
+  const val = (c, g) => c.groups[g] || 0;
+  const parentVal = (c, par) => parents[par].kids.reduce((n, g) => n + val(c, g), 0);
+
+  // Chart series: Regular payments + each parent category (max 8; extras fold into the last)
+  const series = [];
+  if (regKeys.length) series.push({ id: 'regular', name: 'Regular payments', get: c => regKeys.reduce((n, g) => n + val(c, g), 0) });
+  for (const par of parentIds) series.push({ id: par, name: par ? catName(par) : 'Uncategorised', get: c => parentVal(c, par) });
+  while (series.length > 8) { const a = series.splice(7, 2); series.push({ id: 'other', name: 'Other', get: c => a.reduce((n, x) => n + x.get(c), 0) }); }
+  series.forEach((x, i) => { x.color = `var(${CAT_COLORS[i]})`; });
+
+  // Legend
+  $('cycleLegend').innerHTML = series.map(x => `<span><span class="k" style="background:${x.color};height:10px;width:10px;border-radius:2px"></span>${esc(x.name)}</span>`).join('');
+
+  // Stacked bars
+  const svg = $('cycleChart'), W = 900, H = 280, L = 56, R = 10, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+  const max = Math.max(...cycles.map(c => c.total)) * 1.05 || 1, slot = pw / cycles.length, bw = Math.min(44, slot * 0.6);
+  const Y = v => T + (1 - v / max) * ph;
+  let out = niceTicks(0, max).map(t => `<line x1="${L}" x2="${L + pw}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--grid)"/><text x="${L - 6}" y="${Y(t)}" text-anchor="end" dominant-baseline="middle">${compact(t)}</text>`).join('');
+  const every = Math.ceil(cycles.length / 10);
+  cycles.forEach((c, i) => {
+    const cx = L + slot * (i + 0.5);
+    let y = T + ph;
+    out += `<rect class="colhl" data-i="${i}" x="${cx - slot / 2}" y="${T}" width="${slot}" height="${ph}" fill="var(--line)" opacity="0"/>`;
+    for (const x of series) {
+      const v = x.get(c); if (v <= 0) continue;
+      const h = Math.max(1, v / max * ph - 2);       // 2px surface gap between segments
+      y -= h + 2;
+      out += `<rect x="${cx - bw / 2}" y="${y + 2}" width="${bw}" height="${h}" rx="2" fill="${x.color}" ${c.inProgress ? 'opacity=".55"' : ''}/>`;
+    }
+    if (i % every === 0 || i === cycles.length - 1) out += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${cycleLabel(c)}</text>`;
+  });
+  out += `<rect id="cycHit" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/>`;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = out;
+  const tip = $('cycleTip');
+  const show = i => {
+    svg.querySelectorAll('.colhl').forEach(r => r.setAttribute('opacity', Number(r.dataset.i) === i ? '.5' : '0'));
+    const c = cycles[i]; tip.replaceChildren();
+    const h = document.createElement('div'); h.className = 'd'; h.textContent = `Pay cycle from ${dayLabel(c.start)}${c.inProgress ? ' (in progress)' : ''}`; tip.append(h);
+    for (const x of series) {
+      const v = x.get(c); if (v <= 0) continue;
+      const row = document.createElement('div'), k = document.createElement('i'), nm = document.createElement('span'), b = document.createElement('b');
+      row.className = 'row'; k.className = 'k'; k.style.background = x.color; nm.append(k, x.name); b.textContent = money(v); row.append(nm, b); tip.append(row);
+    }
+    const tr = document.createElement('div'), tb = document.createElement('b'); tr.className = 'row'; tb.textContent = money(c.total); tr.append('Total', tb); tr.style.cssText = 'border-top:1px solid var(--line);margin-top:4px;padding-top:4px'; tip.append(tr);
+    tip.hidden = false;
+    const box = svg.getBoundingClientRect(), px = (L + slot * (i + 0.5)) / W * box.width;
+    tip.style.left = Math.min(Math.max(px + 12, 0), box.width - tip.offsetWidth) + 'px'; tip.style.top = '0px';
+  };
+  const hit = $('cycHit');
+  hit.onpointermove = e => { const box = svg.getBoundingClientRect(); show(Math.max(0, Math.min(cycles.length - 1, Math.floor(((e.clientX - box.left) / box.width * W - L) / slot)))); };
+  hit.onpointerleave = () => { tip.hidden = true; svg.querySelectorAll('.colhl').forEach(r => r.setAttribute('opacity', '0')); };
+
+  // Table: rows = groups, columns = cycles (+ average of completed cycles)
+  const done = cycles.filter(c => !c.inProgress), avg = fn => done.length ? done.reduce((n, c) => n + fn(c), 0) / done.length : 0;
+  const cell = v => `<td class="amt">${v ? money(v) : '–'}</td>`;
+  const tr = (label, fn, cls = '') => `<tr class="${cls}"><td>${label}</td>${cycles.map(c => cell(fn(c))).join('')}${cell(avg(fn))}</tr>`;
+  const subs = $('cycleSubs').checked;
+  let rowsHtml = '';
+  if (regKeys.length) {
+    rowsHtml += tr('Regular payments', c => regKeys.reduce((n, g) => n + val(c, g), 0), 'grp');
+    regKeys.forEach(g => rowsHtml += tr(esc(g.slice(2)), c => val(c, g), 'sub'));
+  }
+  for (const par of parentIds) {
+    rowsHtml += tr(esc(par ? catName(par) : 'Uncategorised'), c => parentVal(c, par), 'grp');
+    if (subs && par) parents[par].kids.sort((a, b) => all[b] - all[a]).forEach(g => rowsHtml += tr(esc(catName(g.slice(2))), c => val(c, g), 'sub'));
+  }
+  rowsHtml += tr('Total spending', c => c.total, 'grp tot');
+  $('cycleHead').innerHTML = `<tr><th>Category</th>${cycles.map(c => `<th class="amt">${cycleLabel(c)}${c.inProgress ? '*' : ''}</th>`).join('')}<th class="amt">Avg</th></tr>`;
+  $('cycleRows').innerHTML = rowsHtml;
 }
 
 // ---- Regular payments ----
@@ -516,10 +667,10 @@ const FREQS = [
 const median = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
 // Find payees charged at a steady interval. Returns rows sorted by estimated monthly cost.
-function detectRecurring(txns, now = new Date()) {
+function detectRecurring(txns, now = new Date(), income = false) {
   const groups = {};
   for (const t of txns) {
-    if (t.amount >= 0 || t.isTransfer || t.status === 'HELD') continue;
+    if ((income ? t.amount <= 0 : t.amount >= 0) || t.isTransfer || t.status === 'HELD') continue;
     (groups[t.description.trim().toUpperCase()] ||= []).push(t);
   }
   const rows = [];
@@ -530,8 +681,8 @@ function detectRecurring(txns, now = new Date()) {
     const days = [], amts = [];
     for (const t of items) {
       const d = Math.floor(new Date(t.createdAt) / 864e5);
-      if (days.length && days[days.length - 1] === d) amts[amts.length - 1] += -t.amount;
-      else { days.push(d); amts.push(-t.amount); }
+      if (days.length && days[days.length - 1] === d) amts[amts.length - 1] += Math.abs(t.amount);
+      else { days.push(d); amts.push(Math.abs(t.amount)); }
     }
     if (days.length < 3) continue;
     const gaps = days.slice(1).map((d, i) => d - days[i]);
@@ -557,7 +708,11 @@ function detectRecurring(txns, now = new Date()) {
 // Which detected payees the user has confirmed as regular (persisted per token; survives cache clears)
 let recRows = [], regulars = new Set(), regKey = null;
 const loadRegulars = () => { try { return new Set(JSON.parse(localStorage.getItem(regKey) || '[]')); } catch { return new Set(); } };
-const saveRegulars = () => { try { localStorage.setItem(regKey, JSON.stringify([...regulars])); } catch {} };
+const saveRegulars = () => { try { localStorage.setItem(regKey, JSON.stringify([...regulars])); } catch {} renderCycles(); };
+async function ensureRegulars(auth) {
+  const k = 'up_regulars_' + await tokenKey(auth.token);
+  if (k !== regKey) { regKey = k; regulars = loadRegulars(); }
+}
 
 function renderRecurring() {
   const fmt = d => d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -695,6 +850,8 @@ function render() {
 $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
+$('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); };
+$('cycleN').onchange = $('cycleSubs').onchange = () => renderCycles();
 $('showProj').onchange = () => renderBalanceChart(
   $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0,
   $('until').value ? new Date($('until').value + 'T23:59:59').getTime() : Infinity);

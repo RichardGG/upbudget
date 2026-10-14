@@ -32,6 +32,7 @@ history you newly ask for. Use **Clear cache & reload** to refetch everything. N
   - Payoff projections (last 3 months, last 12 months and all-history pace) shown as dashed lines with estimated payoff dates
 - Money flow diagram: external income → accounts, plus net transfers between accounts
 - Regular payments: detects weekly, fortnightly, monthly, quarterly and yearly payees from the last 10 years, with typical amount, next due date and estimated monthly cost
+- Spending per pay cycle: detects your salary, then shows spending per pay cycle by category (confirmed regulars grouped separately), as a stacked chart and a table
   - Tick the payees that really are regular; choices are saved in your browser and can be filtered with "Confirmed only"
 
 ## Local preview
