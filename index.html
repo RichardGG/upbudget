@@ -77,6 +77,10 @@
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
   #rows tr.tap td:first-child { padding-left:26px; }
+  .ghrow { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .brk { display:flex; gap:1px; height:6px; border-radius:3px; overflow:hidden; margin-top:6px; } .brk i { display:block; height:100%; }
+  .share { height:3px; margin-top:5px; max-width:100%; } .share i { display:block; height:100%; border-radius:2px; background:hsl(var(--h, 220) 62% 52%); }
+  .share:not([style]) i { background:var(--src); }
   .cat { display:inline-block; border-radius:999px; padding:0 8px; font-size:11px; line-height:18px; vertical-align:baseline; background:hsl(var(--h) 70% 90%); color:hsl(var(--h) 65% 26%); }
   @media (prefers-color-scheme: dark) { .cat { background:hsl(var(--h) 38% 24%); color:hsl(var(--h) 75% 82%); } }
   .catbtn { background:none; border:0; color:var(--accent); padding:0; cursor:pointer; font-size:12px; }
@@ -1207,10 +1211,16 @@ function renderFlow() {
 // Transactions are grouped by pay cycle (calendar months if no salary is found) and only expanded groups are drawn
 const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
 let groupKeys = [];
-const txRow = t => `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
+// share: this transaction's slice of its pay cycle's spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
+const txRow = (t, cyc) => {
+  const spend = t.amount < 0 && !t.isTransfer && cyc && cyc.spent > 0;
+  const c = effCat(t), hue = c ? catHue(c) : null, share = spend ? -t.amount / cyc.spent : 0;
+  const bar = spend ? `<div class="share" ${hue === null ? '' : `style="--h:${hue}"`} title="${(share * 100).toFixed(1)}% of this pay cycle's spending"><i style="width:${Math.max(1.5, -t.amount / cyc.max * 100).toFixed(1)}%"></i></div>` : '';
+  return `<tr class="tap${isLunch(t) ? ' lunch' : ''}" data-id="${esc(t.id)}">
     <td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}${lunchTag(t)}${t.status === 'HELD' ? ' <span class="sub">(pending)</span>' : ''}
-      <div class="sub">${when(t)} · ${esc(t.account)}${effCat(t) ? ' · ' + catChip(effCat(t), isCatOverridden(t) ? '*' : '') : ''}${t.message ? ' · ' + esc(t.message) : ''}</div></td>
-    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}</td></tr>`;
+      <div class="sub">${when(t)} · ${esc(t.account)}${c ? ' · ' + catChip(c, isCatOverridden(t) ? '*' : '') : ''}${t.message ? ' · ' + esc(t.message) : ''}</div>${bar}</td>
+    <td class="amt ${t.amount >= 0 ? 'pos' : 'neg'}">${money(t.amount)}${spend ? `<div class="sub">${share >= 0.095 ? Math.round(share * 100) : (share * 100).toFixed(1)}%</div>` : ''}</td></tr>`;
+};
 
 function render() {
   const q = $('q').value.toLowerCase(), acct = $('account').value, regOnly = $('regOnly').checked;
@@ -1223,32 +1233,43 @@ function render() {
   $('in').textContent = money(inn); $('out').textContent = money(out);
   $('net').textContent = money(inn + out); $('net').className = inn + out >= 0 ? 'pos' : 'neg';
 
-  // Bucket each transaction (list is newest first) into the pay cycle it falls in
-  const paydays = currentPaydays(), today = dayIdx(Date.now());
+  // Which pay cycle (or month, if there's no salary) a transaction belongs to
+  const paydays = currentPaydays();
   const fmt = d => new Date(d * DAY).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-  const groups = new Map();
-  const bucket = t => {
+  const keyOf = t => {
     const d = dayIdx(Date.parse(t.createdAt));
-    if (!paydays.length) { const m = new Date(d * DAY); return { key: 'm' + m.getUTCFullYear() + '-' + m.getUTCMonth(), label: m.toLocaleDateString('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' }) }; }
+    if (!paydays.length) { const m = new Date(d * DAY); return 'm' + m.getUTCFullYear() + '-' + m.getUTCMonth(); }
     let lo = 0, hi = paydays.length - 1, i = -1;
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (paydays[mid] <= d) { i = mid; lo = mid + 1; } else hi = mid - 1; }
-    if (i < 0) return { key: 'early', label: 'Before your first pay cycle' };
-    const end = i + 1 < paydays.length ? paydays[i + 1] - 1 : null;
-    return { key: 'p' + paydays[i], label: `${fmt(paydays[i])} – ${end === null ? 'now' : fmt(end)}${end === null ? ' (current pay cycle)' : ''}` };
+    return i < 0 ? 'early' : 'p' + paydays[i];
   };
-  for (const t of list) {
-    const { key, label } = bucket(t);
-    let g = groups.get(key); if (!g) groups.set(key, g = { key, label, items: [], spent: 0 });
-    g.items.push(t); if (t.amount < 0 && !t.isTransfer) g.spent -= t.amount;
+  const labelOf = key => {
+    if (key === 'early') return 'Before your first pay cycle';
+    if (key[0] === 'm') { const [y, m] = key.slice(1).split('-'); return new Date(Date.UTC(y, m, 1)).toLocaleDateString('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' }); }
+    const start = Number(key.slice(1)), i = paydays.indexOf(start), end = i + 1 < paydays.length ? paydays[i + 1] - 1 : null;
+    return `${fmt(start)} – ${end === null ? 'now' : fmt(end)}${end === null ? ' (current pay cycle)' : ''}`;
+  };
+  // Whole-cycle spending (ignores search/filters) so shares and the category line always describe the real cycle
+  const cycles = new Map();
+  for (const t of all) {
+    if (t.amount >= 0 || t.isTransfer) continue;
+    const k = keyOf(t); let c = cycles.get(k); if (!c) cycles.set(k, c = { spent: 0, max: 0, cats: {} });
+    const a = -t.amount, cat = effCat(t) || '';
+    c.spent += a; c.max = Math.max(c.max, a); c.cats[cat] = (c.cats[cat] || 0) + a;
   }
+  const groups = new Map();
+  for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
   const filtering = Boolean(q || regOnly);
   let html = '', first = true;
   for (const g of groups.values()) {
-    const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first);
+    const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first), cyc = cycles.get(g.key);
     first = false;
-    html += `<tr class="gh" data-g="${esc(g.key)}" aria-expanded="${open}"><td><span class="chev">${open ? '▾' : '▸'}</span> ${esc(g.label)}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}</div></td><td class="amt neg">${g.spent ? money(-g.spent) : ''}<div class="sub">spent</div></td></tr>`;
-    if (open) html += g.items.map(txRow).join('');
+    const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => y[1] - x[1]).map(([id, v]) =>
+      `<i style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}" title="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)} (${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}%)"></i>`).join('') : '';
+    html += `<tr class="gh" data-g="${esc(g.key)}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
+      <div class="amt neg">${cyc ? money(-cyc.spent) : ''}<div class="sub">spent</div></div></div>${segs ? `<div class="brk" aria-label="Spending by category">${segs}</div>` : ''}</td></tr>`;
+    if (open) html += g.items.map(t => txRow(t, cyc)).join('');
   }
   $('rows').innerHTML = html || '<tr><td class="sub">No transactions match.</td></tr>';
 }
