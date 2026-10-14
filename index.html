@@ -90,6 +90,7 @@
   tr.sh td { padding-left:26px; font-size:13px; background:color-mix(in srgb, var(--line) 40%, transparent); border-bottom:1px solid var(--line); cursor:pointer; }
   tr.sh td:first-child { padding-left:22px; } tr.sh .amt { font-weight:600; }
   #rows.nested tr.tap td:first-child { padding-left:46px; }
+  .sbar { margin:4px 0 0 20px; max-width:calc(100% - 20px); }
   .ghrow { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
   .brk { display:flex; gap:1px; height:6px; border-radius:3px; overflow:hidden; margin-top:6px; } .brk i { display:block; height:100%; }
   .share { height:3px; margin-top:5px; max-width:100%; } .share i { display:block; height:100%; border-radius:2px; background:hsl(var(--h, 220) 62% 52%); }
@@ -1251,7 +1252,7 @@ function renderFlow() {
 const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
 let groupKeys = [];
 const INCOME_ID = '__in__';   // pseudo-category for money in and transfers
-let lastFilterSig = null;
+let lastFilterSig = null, subDefault = true;   // subDefault: whether categories start open (Collapse all / Expand all flip it)
 const subOpen = new Map();   // 'cycleKey|category' → open? (default open) for the nest-by-category view
 let catFilter = null;   // category id to show only (''= uncategorised), set by clicking a segment of a pay cycle's category line
 // share: this transaction's slice of its pay cycle's (filtered) spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
@@ -1305,7 +1306,7 @@ function render() {
   groupKeys = [...groups.keys()];
   // A different filter starts afresh: drop earlier expand/collapse choices so the new results aren't hidden in collapsed groups
   const sig = [q, acct, regMode, catFilter].join('\u0000');
-  if (sig !== lastFilterSig) { groupOpen.clear(); lastFilterSig = sig; }
+  if (sig !== lastFilterSig) { groupOpen.clear(); subOpen.clear(); subDefault = true; lastFilterSig = sig; }
   const nest = $('nestCat').checked;
   $('rows').classList.toggle('nested', nest);
   const filtering = Boolean(q || regMode !== 'all' || catFilter !== null);
@@ -1330,10 +1331,11 @@ function render() {
       }
       const rank = id => id === INCOME_ID ? 2 : id === '' ? 1 : 0;
       for (const sg of [...subs.values()].sort((a, b) => rank(a.id) - rank(b.id) || catName(a.id).localeCompare(catName(b.id)))) {
-        const sk = g.key + '|' + sg.id, sopen = subOpen.has(sk) ? subOpen.get(sk) : true;
+        const sk = g.key + '|' + sg.id, sopen = subOpen.has(sk) ? subOpen.get(sk) : subDefault;
         const name = sg.id === INCOME_ID ? '<span class="sub">Income &amp; transfers</span>' : sg.id ? catChip(sg.id) : '<span class="cat" style="--h:220;background:var(--line);color:var(--muted)">Uncategorised</span>';
         const share = cyc && cyc.spent && sg.id !== INCOME_ID ? sg.spent / cyc.spent * 100 : null;
-        html += `<tr class="sh" data-sg="${esc(sk)}" aria-expanded="${sopen}"><td><span class="chev">${sopen ? '▾' : '▸'}</span> ${name} <span class="sub">${sg.items.length}</span></td><td class="amt">${sg.id === INCOME_ID ? '' : money(-sg.spent)}${share === null ? '' : `<div class="sub">${share >= 9.5 ? Math.round(share) : share.toFixed(1)}% of cycle</div>`}</td></tr>`;
+        const bar = share === null ? '' : `<div class="share sbar" ${sg.id ? `style="--h:${catHue(sg.id)}"` : ''} title="${share.toFixed(1)}% of the spending shown for this pay cycle"><i style="width:${Math.max(1, Math.min(100, share)).toFixed(1)}%"></i></div>`;
+        html += `<tr class="sh" data-sg="${esc(sk)}" aria-expanded="${sopen}"><td><span class="chev">${sopen ? '▾' : '▸'}</span> ${name} <span class="sub">${sg.items.length}</span>${bar}</td><td class="amt">${sg.id === INCOME_ID ? '' : money(-sg.spent)}${share === null ? '' : `<div class="sub">${share >= 9.5 ? Math.round(share) : share.toFixed(1)}% of cycle</div>`}</td></tr>`;
         if (sopen) html += sg.items.map(t => txRow(t, cyc)).join('');
       }
     }
@@ -1393,8 +1395,8 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
 try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; $('nestCat').checked = localStorage.getItem('up_nest_cat') === '1'; } catch {}
 $('nestCat').onchange = () => { try { localStorage.setItem('up_nest_cat', $('nestCat').checked ? '1' : '0'); } catch {} render(); };
 $('q').oninput = $('account').onchange = $('regMode').onchange = () => { try { localStorage.setItem('up_reg_mode', $('regMode').value); } catch {} render(); };
-$('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); render(); };
-$('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); render(); };
+$('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); subOpen.clear(); subDefault = true; render(); };
+$('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); subOpen.clear(); subDefault = false; render(); };
 // ---- Tabs ----
 const TABS = ['transactions', 'cycles', 'flows', 'regulars', 'loan'];
 let wantTab = 'transactions';   // the tab asked for, kept even while it's unavailable (the home loan tab only appears once accounts load)
