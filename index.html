@@ -58,6 +58,10 @@
   table.cyc td:first-child, table.cyc th:first-child { position:sticky; left:0; background:var(--bg); }
   table.cyc tr.grp td { font-weight:600; } table.cyc tr.sub td:first-child { padding-left:20px; color:var(--muted); font-weight:400; }
   table.cyc td.tap:hover { background:var(--line); cursor:pointer; text-decoration:underline; }
+  :root { --hot:#eb6834; --cold:#2a78d6; }
+  @media (prefers-color-scheme: dark) { :root { --hot:#d95926; --cold:#3987e5; } }
+  .scale { display:flex; align-items:center; gap:6px; margin:4px 0; } .grad { display:inline-block; width:120px; height:10px; border-radius:5px; border:1px solid var(--line); background:linear-gradient(90deg, color-mix(in srgb, var(--cold) 45%, transparent), transparent, color-mix(in srgb, var(--hot) 45%, transparent)); }
+  table.cyc tr.memo td { font-style:italic; border-top:1px dashed var(--line); } table.cyc tr.memo td:first-child { color:var(--muted); }
   table.cyc tr.tot td { border-top:2px solid var(--line); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
@@ -155,7 +159,8 @@
   <div id="cycleBody" hidden>
     <div class="legend" id="cycleLegend"></div>
     <div class="chart"><svg id="cycleChart" role="img" aria-label="Spending per pay cycle by category" style="width:100%;height:auto;display:block"></svg><div id="cycleTip" class="tip" hidden></div></div>
-    <div class="sub">Transfers between your accounts are excluded. * = current cycle (in progress, not in the average).</div>
+    <div class="sub">Transfers between your accounts are excluded. * = current cycle (in progress, not in the average or shading).</div>
+    <div class="sub scale"><span>Shading vs each row's average:</span> <span>spent less</span><i class="grad"></i><span>spent more</span></div>
     <div style="overflow-x:auto"><table class="cyc"><thead id="cycleHead"></thead><tbody id="cycleRows"></tbody></table></div>
   </div>
   <h2>Transactions</h2>
@@ -804,8 +809,18 @@ function renderCycles(auth) {
 
   // Table: rows = groups, columns = cycles (+ average of completed cycles)
   const done = cycles.filter(c => !c.inProgress), avg = fn => done.length ? done.reduce((n, c) => n + fn(c), 0) / done.length : 0;
-  const cell = (v, spec, i) => v ? `<td class="amt tap" data-spec="${esc(spec)}" data-c="${i}">${money(v)}</td>` : '<td class="amt">–</td>';
-  const tr = (label, fn, cls, spec) => `<tr class="${cls}"><td>${label}</td>${cycles.map((c, i) => cell(fn(c), spec, i)).join('')}${cell(avg(fn), spec, 'avg')}</tr>`;
+  // Cells are shaded by how far they sit from that row's own average (in standard deviations over completed cycles):
+  // warm = spent more than usual, cool = less. The in-progress cycle is partial, so it's never shaded.
+  const cell = (v, spec, i, z = 0, mean = 0) => {
+    const pct = Math.min(Math.abs(z), 2) / 2 * 45;
+    const style = pct >= 4 ? ` style="background:color-mix(in srgb, var(${z > 0 ? '--hot' : '--cold'}) ${pct.toFixed(0)}%, transparent)" title="${money(v)}: ${Math.round(Math.abs(v - mean) / mean * 100)}% ${z > 0 ? 'above' : 'below'} the ${money(mean)} average"` : '';
+    return v ? `<td class="amt tap"${style} data-spec="${esc(spec)}" data-c="${i}">${money(v)}</td>` : `<td class="amt"${style}>–</td>`;
+  };
+  const tr = (label, fn, cls, spec) => {
+    const mean = avg(fn), sd = Math.sqrt(avg(c => (fn(c) - mean) ** 2));
+    const zOf = c => c.inProgress || done.length < 3 || sd < Math.max(0.01, mean * 0.005) ? 0 : (fn(c) - mean) / sd;   // no spread = no shading
+    return `<tr class="${cls}"><td>${label}</td>${cycles.map((c, i) => cell(fn(c), spec, i, zOf(c), mean)).join('')}${cell(mean, spec, 'avg')}</tr>`;
+  };
   const subs = $('cycleSubs').checked;
   let rowsHtml = '';
   if (regKeys.length) {
@@ -817,9 +832,10 @@ function renderCycles(auth) {
     if (subs && par) parents[par].kids.sort((a, b) => all[b] - all[a]).forEach(g => rowsHtml += tr(esc(catName(g.slice(2))), c => val(c, g), 'sub', g));
   }
   rowsHtml += tr('Total spending', c => c.total, 'grp tot', 'T');
+  rowsHtml += tr('of which lunch (11am–1pm)', c => c.items.filter(x => isLunch(x.t)).reduce((n, x) => n - x.t.amount, 0), 'memo', 'L');
   $('cycleHead').innerHTML = `<tr><th>Category</th>${cycles.map(c => `<th class="amt">${cycleLabel(c)}${c.inProgress ? '*' : ''}</th>`).join('')}<th class="amt">Avg</th></tr>`;
   $('cycleRows').innerHTML = rowsHtml;
-  cycleCtx = { cycles, series, labelFor: spec => spec === 'T' ? 'All spending' : spec[0] === 'S' ? series[Number(spec.slice(2))].name : spec[0] === 'P' ? (spec.length > 2 ? catName(spec.slice(2)) : 'Uncategorised') : spec[0] === 'R' ? spec.slice(2) : catName(spec.slice(2)) };
+  cycleCtx = { cycles, series, labelFor: spec => spec === 'L' ? 'Lunch spending (11am–1pm)' : spec === 'T' ? 'All spending' : spec[0] === 'S' ? series[Number(spec.slice(2))].name : spec[0] === 'P' ? (spec.length > 2 ? catName(spec.slice(2)) : 'Uncategorised') : spec[0] === 'R' ? spec.slice(2) : catName(spec.slice(2)) };
 }
 
 let cycleCtx = null;
@@ -828,7 +844,7 @@ function openCycleTxns(spec, ci) {
   const { cycles, series, labelFor } = cycleCtx;
   const match = g => spec === 'T' ? true : spec[0] === 'S' ? series[Number(spec.slice(2))].match(g) : spec[0] === 'P' ? (g[0] === 'C' && parentOf(g.slice(2)) === spec.slice(2)) : g === spec;
   const picked = ci === 'avg' ? cycles.filter(c => !c.inProgress) : [cycles[Number(ci)]];
-  const items = picked.flatMap(c => c.items).filter(x => match(x.g)).map(x => x.t).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const items = picked.flatMap(c => c.items).filter(x => spec === 'L' ? isLunch(x.t) : match(x.g)).map(x => x.t).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const total = items.reduce((n, t) => n - t.amount, 0);
   $('cTitle').textContent = labelFor(spec);
   $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
