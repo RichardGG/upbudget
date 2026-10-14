@@ -136,6 +136,14 @@
     <span><i style="background:var(--xfer)"></i>Transfers between accounts (net)</span>
   </div>
   <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
+  <h2>Spending flow</h2>
+  <div class="controls" style="align-items:center">
+    <label class="sub">Top vendors: <select id="sfTop"><option>8</option><option selected>15</option><option>25</option></select></label>
+    <label class="sub"><input type="checkbox" id="sfSubs"> Subcategories</label>
+    <span class="sub">Where outgoing money went in the date range above. Tap a vendor to review it.</span>
+  </div>
+  <div class="chart"><svg id="spendFlow" role="img" aria-label="Outgoing spending by category and vendor" style="width:100%;height:auto;display:block"></svg><div id="sfTip" class="tip" hidden></div></div>
+  <details><summary>Table view</summary><table><thead><tr><th>Category</th><th>Vendor</th><th class="amt">Amount</th></tr></thead><tbody id="sfTable"></tbody></table></details>
   <h2>Regular payments</h2>
   <div class="controls"><button id="findRec">Find regular payments</button></div>
   <div id="regChips" class="chips" hidden></div>
@@ -574,7 +582,7 @@ async function load(force = false) {
     $('status').textContent = '';
     showCacheInfo(rows, meta, added);
     await ensureRegulars(auth);
-    render(); renderFlow(); renderBalanceChart(since, until); renderCycles(auth); renderChips();
+    render(); renderFlow(); renderSpendFlow(); renderBalanceChart(since, until); renderCycles(auth); renderChips();
   } catch (e) {
     $('status').className = 'error'; $('status').textContent = netError(e);
   }
@@ -692,6 +700,98 @@ $('vRows').addEventListener('click', e => {      // swap the category label for 
   sel.onchange = () => chooseCat({ type: 'txn', id: t.id }, sel.value);
   sel.onblur = () => { if (document.contains(sel)) openVendor($('vAll').dataset.key); };
 });
+
+// ---- Spending flow: outgoing money, category → vendor (ribbon width = amount) ----
+const OTHER_ID = '__other__';
+function renderSpendFlow() {
+  const svg = $('spendFlow'), tip = $('sfTip');
+  const subs = $('sfSubs').checked, topN = Number($('sfTop').value), MAX_CATS = 8;
+  const out = all.filter(t => t.amount < 0 && !t.isTransfer);
+  if (!out.length) { svg.setAttribute('viewBox', '0 0 900 60'); svg.innerHTML = '<text x="450" y="35" text-anchor="middle" fill="var(--muted)" font-size="12">No spending in this range.</text>'; $('sfTable').innerHTML = ''; return; }
+
+  // Totals per category and per vendor, plus the category×vendor matrix
+  const catOf = t => { const c = effCat(t) || ''; return subs ? c : parentOf(c); };
+  const cTot = {}, vTot = {}, vName = {}, m = {};
+  for (const t of out) {
+    const c = catOf(t), v = vendorKey(t), a = -t.amount;
+    cTot[c] = (cTot[c] || 0) + a; vTot[v] = (vTot[v] || 0) + a; vName[v] ||= t.description;
+    (m[c] ||= {})[v] = (m[c][v] || 0) + a;
+  }
+  // Keep the biggest categories/vendors; fold the rest so every node stays readable
+  const rank = o => Object.keys(o).sort((x, y) => o[y] - o[x]);
+  const catIds = rank(cTot), vIds = rank(vTot);
+  const keepC = new Set(catIds.slice(0, catIds.length > MAX_CATS ? MAX_CATS - 1 : MAX_CATS)), keepV = new Set(vIds.slice(0, topN));
+  const L = [], R = [];   // nodes
+  const lNode = {}, rNode = {};
+  const addNode = (arr, map, id, name, color) => (map[id] = { id, name, color, value: 0, links: [] }, arr.push(map[id]), map[id]);
+  catIds.filter(c => keepC.has(c)).forEach((c, i) => addNode(L, lNode, c, c ? catName(c) : 'Uncategorised', `var(${CAT_COLORS[i]})`));
+  if (catIds.some(c => !keepC.has(c))) addNode(L, lNode, OTHER_ID, 'Other categories', 'var(--src)');
+  vIds.filter(v => keepV.has(v)).forEach(v => addNode(R, rNode, v, vName[v], 'var(--src)'));
+  if (vIds.some(v => !keepV.has(v))) addNode(R, rNode, OTHER_ID, `Other vendors (${vIds.length - topN})`, 'var(--src)');
+  const flows = {};
+  for (const c of catIds) for (const v in m[c]) {
+    const l = lNode[keepC.has(c) ? c : OTHER_ID], r = rNode[keepV.has(v) ? v : OTHER_ID], k = l.id + '\u0001' + r.id;
+    (flows[k] ||= { l, r, value: 0 }).value += m[c][v];
+  }
+  for (const f of Object.values(flows)) { f.l.value += f.value; f.r.value += f.value; f.l.links.push(f); f.r.links.push(f); }
+  L.sort((a, b) => (a.id === OTHER_ID) - (b.id === OTHER_ID) || b.value - a.value);
+  R.sort((a, b) => (a.id === OTHER_ID) - (b.id === OTHER_ID) || b.value - a.value);
+
+  // Vertical layout: node height ∝ value (min 16px), 8px gaps; columns centred on the taller one
+  const total = out.reduce((n, t) => n - t.amount, 0), GAP = 8, MINH = 22;
+  const colH = Math.max(340, Math.max(L.length, R.length) * 32);
+  const k = (colH - GAP * (Math.max(L.length, R.length) - 1)) / total;
+  const place = nodes => { let y = 0; for (const n of nodes) { n.h = Math.max(MINH, n.value * k); n.y = y; y += n.h + GAP; } return y - GAP; };
+  const hL = place(L), hR = place(R), H = Math.max(hL, hR) + 20;
+  L.forEach(n => n.y += (H - 20 - hL) / 2 + 10); R.forEach(n => n.y += (H - 20 - hR) / 2 + 10);
+
+  const W = 900, LX = 190, RX = 700, NW = 14;
+  const rIndex = Object.fromEntries(R.map((n, i) => [n.id, i])), lIndex = Object.fromEntries(L.map((n, i) => [n.id, i]));
+  L.forEach(n => { n.links.sort((a, b) => rIndex[a.r.id] - rIndex[b.r.id]); let y = n.y; for (const f of n.links) { f.th_l = f.value / n.value * n.h; f.y0 = y; y += f.th_l; } });
+  R.forEach(n => { n.links.sort((a, b) => lIndex[a.l.id] - lIndex[b.l.id]); let y = n.y; for (const f of n.links) { f.th_r = f.value / n.value * n.h; f.y1 = y; y += f.th_r; } });
+
+  const short = (t, n) => t.length > n ? t.slice(0, n - 1) + '…' : t, pct = (v, t) => (v / t * 100).toFixed(v / t < 0.1 ? 1 : 0) + '%';
+  let g = '';
+  const x0 = LX + NW, x1 = RX, mid = (x0 + x1) / 2;
+  Object.values(flows).forEach((f, i) => {
+    f.id = i;
+    g += `<path class="rib" data-l="${esc(f.l.id)}" data-r="${esc(f.r.id)}" data-i="${i}" fill="${f.l.color}" fill-opacity=".45" d="M${x0} ${f.y0}C${mid} ${f.y0} ${mid} ${f.y1} ${x1} ${f.y1}L${x1} ${f.y1 + f.th_r}C${mid} ${f.y1 + f.th_r} ${mid} ${f.y0 + f.th_l} ${x0} ${f.y0 + f.th_l}Z"/>`;
+  });
+  for (const n of L) g += `<g class="nd" data-side="l" data-id="${esc(n.id)}"><rect x="${LX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="${n.color}"/>
+    <text x="${LX - 8}" y="${n.y + n.h / 2 - 5}" text-anchor="end" class="lbl">${esc(short(n.name, 24))}</text><text x="${LX - 8}" y="${n.y + n.h / 2 + 9}" text-anchor="end">${money(n.value)} · ${pct(n.value, total)}</text></g>`;
+  for (const n of R) g += `<g class="nd" data-side="r" data-id="${esc(n.id)}" ${n.id === OTHER_ID ? '' : 'style="cursor:pointer"'}><rect x="${RX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="var(--src)"/>
+    <text x="${RX + NW + 8}" y="${n.y + n.h / 2 - 5}" class="lbl">${esc(short(n.name, 26))}</text><text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 9}">${money(n.value)}</text></g>`;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = g;
+  svg.querySelectorAll('text').forEach(t => { t.style.fill = t.classList.contains('lbl') ? 'var(--fg)' : 'var(--muted)'; t.style.fontSize = t.classList.contains('lbl') ? '12px' : '11px'; if (t.classList.contains('lbl')) t.style.fontWeight = 600; });
+
+  // Hover: dim everything not connected to the hovered node/ribbon, with a tooltip
+  const rib = [...svg.querySelectorAll('.rib')], flowList = Object.values(flows);
+  const lit = pred => rib.forEach(r => r.setAttribute('fill-opacity', pred(r) ? '.8' : '.12'));
+  const say = (e, title, rows) => {
+    tip.replaceChildren(); const d = document.createElement('div'); d.className = 'd'; d.textContent = title; tip.append(d);
+    for (const [a, b] of rows) { const row = document.createElement('div'), v = document.createElement('b'); row.className = 'row'; v.textContent = b; row.append(a, v); tip.append(row); }
+    tip.hidden = false;
+    const box = svg.getBoundingClientRect(), r = $('sfTip').parentElement.getBoundingClientRect();
+    tip.style.left = Math.min(Math.max(e.clientX - r.left + 14, 0), r.width - tip.offsetWidth) + 'px'; tip.style.top = Math.max(0, e.clientY - r.top - tip.offsetHeight - 10) + 'px';
+  };
+  const reset = () => { rib.forEach(r => r.setAttribute('fill-opacity', '.45')); tip.hidden = true; };
+  svg.onpointerover = svg.onpointermove = e => {
+    const ribEl = e.target.closest('.rib'), nd = e.target.closest('.nd');
+    if (ribEl) { const f = flowList[Number(ribEl.dataset.i)]; lit(r => r === ribEl); say(e, `${f.l.name} → ${f.r.name}`, [['Amount', money(f.value)], [`Of ${f.l.name}`, pct(f.value, f.l.value)], [`Of ${f.r.name}`, pct(f.value, f.r.value)]]); }
+    else if (nd) {
+      const n = (nd.dataset.side === 'l' ? lNode : rNode)[nd.dataset.id];
+      lit(r => r.dataset[nd.dataset.side] === nd.dataset.id);
+      say(e, n.name, [['Total', money(n.value)], ['Share of spending', pct(n.value, total)], [nd.dataset.side === 'l' ? 'Vendors' : 'Categories', String(n.links.length)]]);
+    } else reset();
+  };
+  svg.onpointerleave = reset;
+  svg.onclick = e => {
+    const nd = e.target.closest('.nd[data-side="r"]'); if (!nd || nd.dataset.id === OTHER_ID) return;
+    openVendor(nd.dataset.id);
+  };
+
+  $('sfTable').innerHTML = flowList.slice().sort((a, b) => b.value - a.value).map(f => `<tr><td>${esc(f.l.name)}</td><td>${esc(f.r.name)}</td><td class="amt">${money(f.value)}</td></tr>`).join('');
+}
 
 // ---- Pay cycles ----
 // The salary is the recurring income payee with the highest monthly total (override via the dropdown).
@@ -1061,6 +1161,7 @@ function render() {
 $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
+$('sfTop').onchange = $('sfSubs').onchange = () => renderSpendFlow();
 $('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); };
 try { $('cycleHideReg').checked = localStorage.getItem('up_hide_regulars') === '1'; } catch {}
 $('cycleHideReg').onchange = () => { try { localStorage.setItem('up_hide_regulars', $('cycleHideReg').checked ? '1' : '0'); } catch {} renderCycles(); };
