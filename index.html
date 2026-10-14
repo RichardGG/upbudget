@@ -77,6 +77,9 @@
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
   #rows tr.tap td:first-child { padding-left:26px; }
+  .tipf { position:fixed; }
+  #catFilterChip { display:inline-flex; font-size:12px; } #catFilterChip[hidden] { display:none; } #catFilterClear { background:none; color:var(--muted); border:0; padding:0 2px; cursor:pointer; font-size:16px; }
+  .brk i { cursor:pointer; } .brk:hover i { opacity:.6; } .brk i:hover, .brk i:focus-visible { opacity:1; } .brk i.dim { opacity:.3; } .brk i:focus-visible { outline:2px solid var(--fg); outline-offset:-2px; }
   .ghrow { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
   .brk { display:flex; gap:1px; height:6px; border-radius:3px; overflow:hidden; margin-top:6px; } .brk i { display:block; height:100%; }
   .share { height:3px; margin-top:5px; max-width:100%; } .share i { display:block; height:100%; border-radius:2px; background:hsl(var(--h, 220) 62% 52%); }
@@ -116,6 +119,7 @@
     <select id="account" aria-label="Account"><option value="">All accounts</option></select>
     <input id="q" type="search" placeholder="Search…">
     <label class="sub" style="align-self:center"><input type="checkbox" id="regOnly"> Regulars only</label>
+    <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
     <button id="load">Load</button>
   </div>
   <div class="sub" style="margin-bottom:12px"><span id="cacheInfo">Nothing cached yet.</span> <a href="#" id="clearCache">Clear cache &amp; reload</a></div>
@@ -211,6 +215,7 @@
     <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" id="ncCancel" style="background:none;color:var(--muted)">Cancel</button><button type="submit">Create</button></div>
   </form>
 </dialog>
+<div id="segTip" class="tip tipf" hidden></div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -1211,6 +1216,7 @@ function renderFlow() {
 // Transactions are grouped by pay cycle (calendar months if no salary is found) and only expanded groups are drawn
 const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
 let groupKeys = [];
+let catFilter = null;   // category id to show only (''= uncategorised), set by clicking a segment of a pay cycle's category line
 // share: this transaction's slice of its pay cycle's spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
 const txRow = (t, cyc) => {
   const spend = t.amount < 0 && !t.isTransfer && cyc && cyc.spent > 0;
@@ -1224,7 +1230,7 @@ const txRow = (t, cyc) => {
 
 function render() {
   const q = $('q').value.toLowerCase(), acct = $('account').value, regOnly = $('regOnly').checked;
-  const list = all.filter(t => (!acct || t.account === acct) && (!regOnly || isRegular(t)) &&
+  const list = all.filter(t => (!acct || t.account === acct) && (!regOnly || isRegular(t)) && (catFilter === null || (effCat(t) || '') === catFilter) &&
     (!q || `${t.description} ${t.message || ''} ${effCat(t) ? catName(effCat(t)) : ''}`.toLowerCase().includes(q)));
   // Transfers between your own accounts net to zero; exclude from totals.
   const real = list.filter(t => !t.isTransfer);
@@ -1260,19 +1266,49 @@ function render() {
   const groups = new Map();
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
-  const filtering = Boolean(q || regOnly);
+  const filtering = Boolean(q || regOnly || catFilter !== null);
+  renderCatFilterChip();
   let html = '', first = true;
   for (const g of groups.values()) {
     const open = filtering || (groupOpen.has(g.key) ? groupOpen.get(g.key) : first), cyc = cycles.get(g.key);
     first = false;
     const segs = cyc ? Object.entries(cyc.cats).sort((x, y) => y[1] - x[1]).map(([id, v]) =>
-      `<i style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}" title="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)} (${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}%)"></i>`).join('') : '';
-    html += `<tr class="gh" data-g="${esc(g.key)}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
+      `<i role="button" tabindex="0" class="${catFilter !== null && catFilter !== id ? 'dim' : ''}" data-cat="${esc(id)}" data-amt="${v}" data-pct="${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}" aria-label="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)}. Press to filter" style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}"></i>`).join('') : '';
+    html += `<tr class="gh" data-g="${esc(g.key)}" data-label="${esc(labelOf(g.key))}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
       <div class="amt neg">${cyc ? money(-cyc.spent) : ''}<div class="sub">spent</div></div></div>${segs ? `<div class="brk" aria-label="Spending by category">${segs}</div>` : ''}</td></tr>`;
     if (open) html += g.items.map(t => txRow(t, cyc)).join('');
   }
   $('rows').innerHTML = html || '<tr><td class="sub">No transactions match.</td></tr>';
 }
+
+function renderCatFilterChip() {
+  const el = $('catFilterChip');
+  el.hidden = catFilter === null;
+  if (catFilter === null) return;
+  el.innerHTML = `Category: ${catFilter ? catChip(catFilter) : '<span class="cat" style="--h:220">Uncategorised</span>'} <button id="catFilterClear" aria-label="Clear category filter">×</button>`;
+}
+$('catFilterChip').onclick = e => { if (e.target.closest('#catFilterClear')) { catFilter = null; render(); } };
+
+// Hover a segment of a pay cycle's category line to see what it is; click to filter the list to that category
+const segTip = $('segTip');
+const segOf = e => e.target.closest && e.target.closest('.brk i');
+const showSegTip = (e, seg) => {
+  const id = seg.dataset.cat, hdr = seg.closest('tr.gh');
+  segTip.replaceChildren();
+  const h = document.createElement('div'); h.className = 'd'; h.textContent = hdr.dataset.label; segTip.append(h);
+  const row = document.createElement('div'), nm = document.createElement('span'), k = document.createElement('i'), b = document.createElement('b');
+  row.className = 'row'; k.className = 'k'; k.style.background = id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)';
+  nm.append(k, id ? catName(id) : 'Uncategorised'); b.textContent = `${money(-Number(seg.dataset.amt))} · ${seg.dataset.pct}%`; row.append(nm, b); segTip.append(row);
+  const hint = document.createElement('div'); hint.className = 'd'; hint.style.marginTop = '4px'; hint.textContent = catFilter === id ? 'Click to clear the filter' : 'Click to show only this category'; segTip.append(hint);
+  segTip.hidden = false;
+  const x = Math.min(e.clientX + 14, window.innerWidth - segTip.offsetWidth - 8), y = e.clientY + 18 + segTip.offsetHeight > window.innerHeight ? e.clientY - segTip.offsetHeight - 10 : e.clientY + 18;
+  segTip.style.left = Math.max(8, x) + 'px'; segTip.style.top = y + 'px';
+};
+$('rows').addEventListener('pointermove', e => { const seg = segOf(e); if (seg) showSegTip(e, seg); else segTip.hidden = true; });
+$('rows').addEventListener('pointerleave', () => { segTip.hidden = true; });
+const toggleSegFilter = seg => { const id = seg.dataset.cat; catFilter = catFilter === id ? null : id; segTip.hidden = true; render(); };
+$('rows').addEventListener('click', e => { const seg = segOf(e); if (seg) { e.stopPropagation(); toggleSegFilter(seg); } }, true);   // capture: don't also toggle the group
+$('rows').addEventListener('keydown', e => { const seg = segOf(e); if (seg && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleSegFilter(seg); } });
 
 $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
