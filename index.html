@@ -87,6 +87,9 @@
   .tipf { position:fixed; }
   #catFilterChip { display:inline-flex; font-size:12px; } #catFilterChip[hidden] { display:none; } #catFilterClear { background:none; color:var(--muted); border:0; padding:0 2px; cursor:pointer; font-size:16px; }
   .brk i { cursor:pointer; } .brk:hover i { opacity:.6; } .brk i:hover, .brk i:focus-visible { opacity:1; } .brk i.dim { opacity:.3; } .brk i:focus-visible { outline:2px solid var(--fg); outline-offset:-2px; }
+  tr.sh td { padding-left:26px; font-size:13px; background:color-mix(in srgb, var(--line) 40%, transparent); border-bottom:1px solid var(--line); cursor:pointer; }
+  tr.sh td:first-child { padding-left:22px; } tr.sh .amt { font-weight:600; }
+  #rows.nested tr.tap td:first-child { padding-left:46px; }
   .ghrow { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
   .brk { display:flex; gap:1px; height:6px; border-radius:3px; overflow:hidden; margin-top:6px; } .brk i { display:block; height:100%; }
   .share { height:3px; margin-top:5px; max-width:100%; } .share i { display:block; height:100%; border-radius:2px; background:hsl(var(--h, 220) 62% 52%); }
@@ -143,6 +146,7 @@
     <div class="controls">
       <select id="account" aria-label="Account"><option value="">All accounts</option></select>
       <input id="q" type="search" placeholder="Search…">
+      <label class="sub" style="align-self:center"><input type="checkbox" id="nestCat"> Nest by category</label>
       <select id="regMode" aria-label="Regular payments"><option value="all">All payments</option><option value="only">Regulars only</option><option value="hide">Hide regulars</option></select>
       <span id="catFilterChip" class="chip" hidden style="align-self:center;padding:2px 8px;gap:6px;align-items:center"></span>
     </div>
@@ -677,6 +681,8 @@ function openVendor(key, highlightId) {
 }
 
 $('rows').onclick = e => {
+  const sh = e.target.closest('tr[data-sg]');
+  if (sh) { const k = sh.dataset.sg; subOpen.set(k, sh.getAttribute('aria-expanded') !== 'true'); return render(); }
   const gh = e.target.closest('tr[data-g]');
   if (gh) { const k = gh.dataset.g; groupOpen.set(k, gh.getAttribute('aria-expanded') !== 'true'); return render(); }
   const tr = e.target.closest('tr[data-id]'); const t = tr && lastRows.find(x => x.id === tr.dataset.id); if (t) openVendor(vendorKey(t), t.id);
@@ -784,7 +790,7 @@ function renderSpendFlow() {
   if (vIds.some(v => !keepV.has(v))) addNode(R, rNode, OTHER_ID, `Other vendors (${vIds.length - topN})`, 'var(--src)');
   const flows = {};
   for (const c of catIds) for (const v in m[c]) {
-    const l = lNode[keepC.has(c) ? c : OTHER_ID], r = rNode[keepV.has(v) ? v : OTHER_ID], k = l.id + '\u0001' + r.id;
+    const l = lNode[keepC.has(c) ? c : OTHER_ID], r = rNode[keepV.has(v) ? v : OTHER_ID], k = l.id + INCOME_ID + r.id;
     (flows[k] ||= { l, r, value: 0 }).value += m[c][v];
   }
   for (const f of Object.values(flows)) { f.l.value += f.value; f.r.value += f.value; f.l.links.push(f); f.r.links.push(f); }
@@ -1244,6 +1250,8 @@ function renderFlow() {
 // Transactions are grouped by pay cycle (calendar months if no salary is found) and only expanded groups are drawn
 const groupOpen = new Map();   // group key → user's choice; unset = only the newest group is open
 let groupKeys = [];
+const INCOME_ID = '__in__';   // pseudo-category for money in and transfers
+const subOpen = new Map();   // 'cycleKey|category' → open? (default open) for the nest-by-category view
 let catFilter = null;   // category id to show only (''= uncategorised), set by clicking a segment of a pay cycle's category line
 // share: this transaction's slice of its pay cycle's spending (bar length is relative to the cycle's biggest purchase; the % is the true share)
 const txRow = (t, cyc) => {
@@ -1294,6 +1302,8 @@ function render() {
   const groups = new Map();
   for (const t of list) { const key = keyOf(t); let g = groups.get(key); if (!g) groups.set(key, g = { key, items: [] }); g.items.push(t); }
   groupKeys = [...groups.keys()];
+  const nest = $('nestCat').checked;
+  $('rows').classList.toggle('nested', nest);
   const filtering = Boolean(q || regMode !== 'all' || catFilter !== null);
   renderCatFilterChip();
   let html = '', first = true;
@@ -1305,7 +1315,24 @@ function render() {
       `<i role="button" tabindex="0" class="${catFilter !== null && catFilter !== id ? 'dim' : ''}" data-cat="${esc(id)}" data-amt="${v}" data-pct="${(v / cyc.spent * 100).toFixed(v / cyc.spent < 0.1 ? 1 : 0)}" aria-label="${esc(id ? catName(id) : 'Uncategorised')}: ${money(-v)}. Press to filter" style="flex:${v} 0 0;min-width:2px;background:${id ? `hsl(${catHue(id)} 62% 52%)` : 'var(--src)'}"></i>`).join('') : '';
     html += `<tr class="gh" data-g="${esc(g.key)}" data-label="${esc(labelOf(g.key))}" aria-expanded="${open}"><td colspan="2"><div class="ghrow"><div><span class="chev">${open ? '▾' : '▸'}</span> ${esc(labelOf(g.key))}<div class="sub">${g.items.length} transaction${g.items.length === 1 ? '' : 's'}${filtering ? ' shown' : ''}</div></div>
       <div class="amt neg">${cyc ? money(-cyc.spent) : ''}<div class="sub">spent</div></div></div>${segs ? `<div class="brk" aria-label="Spending by category">${segs}</div>` : ''}</td></tr>`;
-    if (open) html += g.items.map(t => txRow(t, cyc)).join('');
+    if (open && !nest) html += g.items.map(t => txRow(t, cyc)).join('');
+    else if (open) {
+      // Nest by category: A–Z, then uncategorised, then money in / transfers (which aren't costs)
+      const subs = new Map();
+      for (const t of g.items) {
+        const id = t.amount >= 0 || t.isTransfer ? INCOME_ID : (effCat(t) || '');
+        let sg = subs.get(id); if (!sg) subs.set(id, sg = { id, items: [], spent: 0 });
+        sg.items.push(t); if (id !== INCOME_ID) sg.spent -= t.amount;
+      }
+      const rank = id => id === INCOME_ID ? 2 : id === '' ? 1 : 0;
+      for (const sg of [...subs.values()].sort((a, b) => rank(a.id) - rank(b.id) || catName(a.id).localeCompare(catName(b.id)))) {
+        const sk = g.key + '|' + sg.id, sopen = subOpen.has(sk) ? subOpen.get(sk) : true;
+        const name = sg.id === INCOME_ID ? '<span class="sub">Income &amp; transfers</span>' : sg.id ? catChip(sg.id) : '<span class="cat" style="--h:220;background:var(--line);color:var(--muted)">Uncategorised</span>';
+        const share = cyc && cyc.spent && sg.id !== INCOME_ID ? sg.spent / cyc.spent * 100 : null;
+        html += `<tr class="sh" data-sg="${esc(sk)}" aria-expanded="${sopen}"><td><span class="chev">${sopen ? '▾' : '▸'}</span> ${name} <span class="sub">${sg.items.length}</span></td><td class="amt">${sg.id === INCOME_ID ? '' : money(-sg.spent)}${share === null ? '' : `<div class="sub">${share >= 9.5 ? Math.round(share) : share.toFixed(1)}% of cycle</div>`}</td></tr>`;
+        if (sopen) html += sg.items.map(t => txRow(t, cyc)).join('');
+      }
+    }
   }
   $('rows').innerHTML = html || '<tr><td class="sub">No transactions match.</td></tr>';
 }
@@ -1359,7 +1386,8 @@ $('recAll').onchange = e => {   // applies to the rows currently shown
   const shown = $('recOnly').checked ? recRows.filter(r => regulars.has(r.key)) : recRows;
   shown.forEach(r => e.target.checked ? regulars.add(r.key) : regulars.delete(r.key)); saveRegulars(); renderRecurring();
 };
-try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; } catch {}
+try { $('regMode').value = localStorage.getItem('up_reg_mode') || 'all'; $('nestCat').checked = localStorage.getItem('up_nest_cat') === '1'; } catch {}
+$('nestCat').onchange = () => { try { localStorage.setItem('up_nest_cat', $('nestCat').checked ? '1' : '0'); } catch {} render(); };
 $('q').oninput = $('account').onchange = $('regMode').onchange = () => { try { localStorage.setItem('up_reg_mode', $('regMode').value); } catch {} render(); };
 $('expandAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, true)); render(); };
 $('collapseAll').onclick = e => { e.preventDefault(); groupKeys.forEach(k => groupOpen.set(k, false)); render(); };
