@@ -147,7 +147,7 @@
   <svg id="flow" role="img" aria-label="Money flow between external sources and accounts"></svg>
   <h2>Spending flow</h2>
   <div class="controls" style="align-items:center">
-    <label class="sub">Top vendors: <select id="sfTop"><option>8</option><option selected>15</option><option>25</option></select></label>
+    <label class="sub">Top vendors: <select id="sfTop"><option>8</option><option selected>15</option><option>25</option><option>50</option><option>100</option></select></label>
     <label class="sub"><input type="checkbox" id="sfSubs"> Subcategories</label>
     <span class="sub">Where outgoing money went in the date range above. Tap a vendor to review it.</span>
   </div>
@@ -747,8 +747,9 @@ function renderSpendFlow() {
   R.sort((a, b) => (a.id === OTHER_ID) - (b.id === OTHER_ID) || b.value - a.value);
 
   // Vertical layout: node height ∝ value (min 16px), 8px gaps; columns centred on the taller one
-  const total = out.reduce((n, t) => n - t.amount, 0), GAP = 8, MINH = 22;
-  const colH = Math.max(340, Math.max(L.length, R.length) * 32);
+  const dense = R.length > 30;   // long vendor lists get single-line labels so the diagram stays a sensible height
+  const total = out.reduce((n, t) => n - t.amount, 0), GAP = dense ? 5 : 8, MINH = dense ? 14 : 22;
+  const colH = Math.max(340, Math.max(L.length, R.length) * (dense ? 20 : 32));
   const k = (colH - GAP * (Math.max(L.length, R.length) - 1)) / total;
   const place = nodes => { let y = 0; for (const n of nodes) { n.h = Math.max(MINH, n.value * k); n.y = y; y += n.h + GAP; } return y - GAP; };
   const hL = place(L), hR = place(R), H = Math.max(hL, hR) + 20;
@@ -769,8 +770,10 @@ function renderSpendFlow() {
   for (const n of L) g += `<g class="nd" data-side="l" data-id="${esc(n.id)}"><rect x="${LX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="${n.color}"/>
     <text x="${LX - 8}" y="${n.y + n.h / 2 - 5}" text-anchor="end" class="lbl">${esc(short(n.name, 24))}</text><text x="${LX - 8}" y="${n.y + n.h / 2 + 9}" text-anchor="end">${money(n.value)} · ${pct(n.value, total)}</text></g>`;
   for (const n of R) g += `<g class="nd" data-side="r" data-id="${esc(n.id)}" ${n.id === OTHER_ID ? '' : 'style="cursor:pointer"'}><rect x="${RX}" y="${n.y}" width="${NW}" height="${n.h}" rx="3" fill="var(--src)"/>
-    <text x="${RX + NW + 8}" y="${n.y + n.h / 2 - 5}" class="lbl">${esc(short(n.name, 26))}</text><text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 9}">${money(n.value)}</text></g>`;
+    ${dense ? `<text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 4}"><tspan class="lbl">${esc(short(n.name, 22))}</tspan> ${money(n.value)}</text>`
+      : `<text x="${RX + NW + 8}" y="${n.y + n.h / 2 - 5}" class="lbl">${esc(short(n.name, 26))}</text><text x="${RX + NW + 8}" y="${n.y + n.h / 2 + 9}">${money(n.value)}</text>`}</g>`;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.innerHTML = g;
+  svg.querySelectorAll('tspan.lbl').forEach(t => { t.style.fill = 'var(--fg)'; t.style.fontWeight = 600; });
   svg.querySelectorAll('text').forEach(t => { t.style.fill = t.classList.contains('lbl') ? 'var(--fg)' : 'var(--muted)'; t.style.fontSize = t.classList.contains('lbl') ? '12px' : '11px'; if (t.classList.contains('lbl')) t.style.fontWeight = 600; });
 
   // Hover: dim everything not connected to the hovered node/ribbon, with a tooltip
