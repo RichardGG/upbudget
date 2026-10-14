@@ -142,6 +142,7 @@
     <label class="sub">Salary: <select id="salarySel"></select></label>
     <label class="sub">Cycles: <select id="cycleN"><option>6</option><option selected>12</option><option>26</option><option>52</option></select></label>
     <label class="sub"><input type="checkbox" id="cycleSubs"> Show subcategories</label>
+    <label class="sub"><input type="checkbox" id="cycleHideReg"> Hide regular payments</label>
   </div>
   <div id="cycleMsg" class="sub"></div>
   <div id="cycleBody" hidden>
@@ -609,7 +610,7 @@ function findSalaryCandidates(rows) {
     .filter(r => ['Weekly', 'Fortnightly', 'Monthly'].includes(r.freq)).sort((a, b) => b.monthly - a.monthly);
 }
 
-function buildCycles(rows, salaryKey, nCycles) {
+function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
   const sal = rows.filter(t => t.amount > 0 && !t.isTransfer && t.status !== 'HELD' && t.description.trim().toUpperCase() === salaryKey);
   if (!sal.length) return [];
   const typical = median(sal.map(t => t.amount)), paydays = [...new Set(sal.filter(t => t.amount >= typical * 0.5).map(t => dayIdx(Date.parse(t.createdAt))))].sort((a, b) => a - b);
@@ -620,7 +621,7 @@ function buildCycles(rows, salaryKey, nCycles) {
   for (const t of rows) {
     if (t.amount >= 0 || t.isTransfer) continue;
     const key = t.description.trim().toUpperCase();
-    if (key === salaryKey) continue;
+    if (key === salaryKey || (hideRegulars && isRegular(t))) continue;
     const d = dayIdx(Date.parse(t.createdAt));
     if (d < first) continue;
     const c = cycles.find(c => d >= c.start && d < c.end); if (!c) continue;
@@ -642,9 +643,9 @@ function renderCycles(auth) {
   const key = cands.some(c => c.key === saved) ? saved : cands[0]?.key;
   $('salarySel').innerHTML = cands.map(c => `<option value="${esc(c.key)}" ${c.key === key ? 'selected' : ''}>${esc(c.name)} (${c.freq.toLowerCase()}, ~${money(c.amount)})</option>`).join('');
   if (!key) { $('cycleMsg').textContent = 'No regular salary found yet (needs a weekly, fortnightly or monthly deposit at least 3 times in the last 2 years).'; $('cycleBody').hidden = true; return; }
-  const cycles = buildCycles(lastRows, key, Number($('cycleN').value));
+  const cycles = buildCycles(lastRows, key, Number($('cycleN').value), $('cycleHideReg').checked);
   $('cycleBody').hidden = cycles.length < 1;
-  $('cycleMsg').textContent = cycles.length ? `Pay cycles run from one ${cands.find(c => c.key === key).name} deposit to the next. ${regulars.size ? '' : 'Tick regular payments above to show them separately.'}` : 'Not enough salary deposits to form a pay cycle.';
+  $('cycleMsg').textContent = cycles.length ? `Pay cycles run from one ${cands.find(c => c.key === key).name} deposit to the next. ${regulars.size ? '' : 'Tick regular payments above to show them separately.'}${$('cycleHideReg').checked ? ' Regular payments are hidden and excluded from totals.' : ''}` : 'Not enough salary deposits to form a pay cycle.';
   if (!cycles.length) return;
 
   // Groups: regular payees, then categories rolled up to their parent (sub-rows in the table)
@@ -927,6 +928,8 @@ $('load').onclick = () => load();
 $('clearCache').onclick = e => { e.preventDefault(); load(true); };
 $('findRec').onclick = findRecurring;
 $('salarySel').onchange = e => { try { localStorage.setItem('up_salary_' + regKey, e.target.value); } catch {} renderCycles(); };
+try { $('cycleHideReg').checked = localStorage.getItem('up_hide_regulars') === '1'; } catch {}
+$('cycleHideReg').onchange = () => { try { localStorage.setItem('up_hide_regulars', $('cycleHideReg').checked ? '1' : '0'); } catch {} renderCycles(); };
 $('cycleN').onchange = $('cycleSubs').onchange = () => renderCycles();
 $('showProj').onchange = () => renderBalanceChart(
   $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0,
