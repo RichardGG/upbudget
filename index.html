@@ -57,6 +57,7 @@
   table.cyc { font-size:12px; } table.cyc td, table.cyc th { white-space:nowrap; padding:4px 6px; }
   table.cyc td:first-child, table.cyc th:first-child { position:sticky; left:0; background:var(--bg); }
   table.cyc tr.grp td { font-weight:600; } table.cyc tr.sub td:first-child { padding-left:20px; color:var(--muted); font-weight:400; }
+  table.cyc td.tap:hover { background:var(--line); cursor:pointer; text-decoration:underline; }
   table.cyc tr.tot td { border-top:2px solid var(--line); }
   tr.tap { cursor:pointer; } tr.tap:hover td { background:var(--line); }
   .tag { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--bg); background:var(--accent); border-radius:4px; padding:1px 5px; vertical-align:middle; }
@@ -67,7 +68,7 @@
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog[open] { display:flex; flex-direction:column; gap:6px; }
   .dhead { display:flex; justify-content:space-between; align-items:center; } .dhead h3 { margin:0; font-size:17px; }
-  #vClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
+  #vClose, #cClose { background:none; color:var(--muted); font-size:22px; padding:0 6px; }
   .vall { font-weight:600; margin-top:6px; } .vlist { overflow:auto; border-top:1px solid var(--line); }
   .vlist tr.hl td { background:var(--line); }
   .error { color:var(--neg); }
@@ -153,6 +154,11 @@
   </div>
   <h2>Transactions</h2>
   <table><tbody id="rows"></tbody></table>
+<dialog id="cycleDlg">
+  <div class="dhead"><h3 id="cTitle"></h3><button id="cClose" aria-label="Close">×</button></div>
+  <div id="cSub" class="sub"></div>
+  <div class="vlist"><table><tbody id="cRows"></tbody></table></div>
+</dialog>
 <dialog id="vendorDlg">
   <div class="dhead"><h3 id="vTitle"></h3><button id="vClose" aria-label="Close">×</button></div>
   <div id="vSummary" class="sub"></div>
@@ -615,7 +621,7 @@ function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
   if (!sal.length) return [];
   const typical = median(sal.map(t => t.amount)), paydays = [...new Set(sal.filter(t => t.amount >= typical * 0.5).map(t => dayIdx(Date.parse(t.createdAt))))].sort((a, b) => a - b);
   const today = dayIdx(Date.now());
-  let cycles = paydays.map((d, i) => ({ start: d, end: i + 1 < paydays.length ? paydays[i + 1] : Math.max(today + 1, d + 1), inProgress: i + 1 === paydays.length, groups: {}, total: 0 }));
+  let cycles = paydays.map((d, i) => ({ start: d, end: i + 1 < paydays.length ? paydays[i + 1] : Math.max(today + 1, d + 1), inProgress: i + 1 === paydays.length, groups: {}, items: [], total: 0 }));
   cycles = cycles.slice(-nCycles);
   const first = cycles[0].start;
   for (const t of rows) {
@@ -626,7 +632,7 @@ function buildCycles(rows, salaryKey, nCycles, hideRegulars = false) {
     if (d < first) continue;
     const c = cycles.find(c => d >= c.start && d < c.end); if (!c) continue;
     const g = isRegular(t) ? 'R:' + t.description : 'C:' + (t.category || '');
-    c.groups[g] = (c.groups[g] || 0) + -t.amount; c.total += -t.amount;
+    c.groups[g] = (c.groups[g] || 0) + -t.amount; c.total += -t.amount; c.items.push({ t, g });
   }
   return cycles;
 }
@@ -661,9 +667,9 @@ function renderCycles(auth) {
 
   // Chart series: Regular payments + each parent category (max 8; extras fold into the last)
   const series = [];
-  if (regKeys.length) series.push({ id: 'regular', name: 'Regular payments', get: c => regKeys.reduce((n, g) => n + val(c, g), 0) });
-  for (const par of parentIds) series.push({ id: par, name: par ? catName(par) : 'Uncategorised', get: c => parentVal(c, par) });
-  while (series.length > 8) { const a = series.splice(7, 2); series.push({ id: 'other', name: 'Other', get: c => a.reduce((n, x) => n + x.get(c), 0) }); }
+  if (regKeys.length) series.push({ id: 'regular', name: 'Regular payments', match: g => g[0] === 'R', get: c => regKeys.reduce((n, g) => n + val(c, g), 0) });
+  for (const par of parentIds) series.push({ id: par, name: par ? catName(par) : 'Uncategorised', match: g => g[0] === 'C' && parentOf(g.slice(2)) === par, get: c => parentVal(c, par) });
+  while (series.length > 8) { const a = series.splice(7, 2); series.push({ id: 'other', name: 'Other', match: g => a.some(x => x.match(g)), get: c => a.reduce((n, x) => n + x.get(c), 0) }); }
   series.forEach((x, i) => { x.color = `var(${CAT_COLORS[i]})`; });
 
   // Legend
@@ -673,16 +679,17 @@ function renderCycles(auth) {
   const svg = $('cycleChart'), W = 900, H = 280, L = 56, R = 10, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
   const max = Math.max(...cycles.map(c => c.total)) * 1.05 || 1, slot = pw / cycles.length, bw = Math.min(44, slot * 0.6);
   const Y = v => T + (1 - v / max) * ph;
+  const segs = [];
   let out = niceTicks(0, max).map(t => `<line x1="${L}" x2="${L + pw}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--grid)"/><text x="${L - 6}" y="${Y(t)}" text-anchor="end" dominant-baseline="middle">${compact(t)}</text>`).join('');
   const every = Math.ceil(cycles.length / 10);
   cycles.forEach((c, i) => {
     const cx = L + slot * (i + 0.5);
-    let y = T + ph;
+    let y = T + ph; segs[i] = [];
     out += `<rect class="colhl" data-i="${i}" x="${cx - slot / 2}" y="${T}" width="${slot}" height="${ph}" fill="var(--line)" opacity="0"/>`;
     for (const x of series) {
       const v = x.get(c); if (v <= 0) continue;
       const h = Math.max(1, v / max * ph - 2);       // 2px surface gap between segments
-      y -= h + 2;
+      y -= h + 2; segs[i].push({ top: y, bottom: y + h + 2, x });
       out += `<rect x="${cx - bw / 2}" y="${y + 2}" width="${bw}" height="${h}" rx="2" fill="${x.color}" ${c.inProgress ? 'opacity=".55"' : ''}/>`;
     }
     if (i % every === 0 || i === cycles.length - 1) out += `<text x="${cx}" y="${H - 6}" text-anchor="middle">${cycleLabel(c)}</text>`;
@@ -706,26 +713,55 @@ function renderCycles(auth) {
   };
   const hit = $('cycHit');
   hit.onpointermove = e => { const box = svg.getBoundingClientRect(); show(Math.max(0, Math.min(cycles.length - 1, Math.floor(((e.clientX - box.left) / box.width * W - L) / slot)))); };
+  hit.style.cursor = 'pointer';
+  hit.onclick = e => {
+    const box = svg.getBoundingClientRect(), i = Math.max(0, Math.min(cycles.length - 1, Math.floor(((e.clientX - box.left) / box.width * W - L) / slot)));
+    const y = (e.clientY - box.top) / box.height * H, seg = segs[i].find(s => y >= s.top && y <= s.bottom);
+    openCycleTxns(seg ? 'S:' + series.indexOf(seg.x) : 'T', i);
+  };
   hit.onpointerleave = () => { tip.hidden = true; svg.querySelectorAll('.colhl').forEach(r => r.setAttribute('opacity', '0')); };
 
   // Table: rows = groups, columns = cycles (+ average of completed cycles)
   const done = cycles.filter(c => !c.inProgress), avg = fn => done.length ? done.reduce((n, c) => n + fn(c), 0) / done.length : 0;
-  const cell = v => `<td class="amt">${v ? money(v) : '–'}</td>`;
-  const tr = (label, fn, cls = '') => `<tr class="${cls}"><td>${label}</td>${cycles.map(c => cell(fn(c))).join('')}${cell(avg(fn))}</tr>`;
+  const cell = (v, spec, i) => v ? `<td class="amt tap" data-spec="${esc(spec)}" data-c="${i}">${money(v)}</td>` : '<td class="amt">–</td>';
+  const tr = (label, fn, cls, spec) => `<tr class="${cls}"><td>${label}</td>${cycles.map((c, i) => cell(fn(c), spec, i)).join('')}${cell(avg(fn), spec, 'avg')}</tr>`;
   const subs = $('cycleSubs').checked;
   let rowsHtml = '';
   if (regKeys.length) {
-    rowsHtml += tr('Regular payments', c => regKeys.reduce((n, g) => n + val(c, g), 0), 'grp');
-    regKeys.forEach(g => rowsHtml += tr(esc(g.slice(2)), c => val(c, g), 'sub'));
+    rowsHtml += tr('Regular payments', c => regKeys.reduce((n, g) => n + val(c, g), 0), 'grp', 'S:0');
+    regKeys.forEach(g => rowsHtml += tr(esc(g.slice(2)), c => val(c, g), 'sub', g));
   }
   for (const par of parentIds) {
-    rowsHtml += tr(esc(par ? catName(par) : 'Uncategorised'), c => parentVal(c, par), 'grp');
-    if (subs && par) parents[par].kids.sort((a, b) => all[b] - all[a]).forEach(g => rowsHtml += tr(esc(catName(g.slice(2))), c => val(c, g), 'sub'));
+    rowsHtml += tr(esc(par ? catName(par) : 'Uncategorised'), c => parentVal(c, par), 'grp', 'P:' + par);
+    if (subs && par) parents[par].kids.sort((a, b) => all[b] - all[a]).forEach(g => rowsHtml += tr(esc(catName(g.slice(2))), c => val(c, g), 'sub', g));
   }
-  rowsHtml += tr('Total spending', c => c.total, 'grp tot');
+  rowsHtml += tr('Total spending', c => c.total, 'grp tot', 'T');
   $('cycleHead').innerHTML = `<tr><th>Category</th>${cycles.map(c => `<th class="amt">${cycleLabel(c)}${c.inProgress ? '*' : ''}</th>`).join('')}<th class="amt">Avg</th></tr>`;
   $('cycleRows').innerHTML = rowsHtml;
+  cycleCtx = { cycles, series, labelFor: spec => spec === 'T' ? 'All spending' : spec[0] === 'S' ? series[Number(spec.slice(2))].name : spec[0] === 'P' ? (spec.length > 2 ? catName(spec.slice(2)) : 'Uncategorised') : spec[0] === 'R' ? spec.slice(2) : catName(spec.slice(2)) };
 }
+
+let cycleCtx = null;
+function openCycleTxns(spec, ci) {
+  if (!cycleCtx) return;
+  const { cycles, series, labelFor } = cycleCtx;
+  const match = g => spec === 'T' ? true : spec[0] === 'S' ? series[Number(spec.slice(2))].match(g) : spec[0] === 'P' ? (g[0] === 'C' && parentOf(g.slice(2)) === spec.slice(2)) : g === spec;
+  const picked = ci === 'avg' ? cycles.filter(c => !c.inProgress) : [cycles[Number(ci)]];
+  const items = picked.flatMap(c => c.items).filter(x => match(x.g)).map(x => x.t).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const total = items.reduce((n, t) => n - t.amount, 0);
+  $('cTitle').textContent = labelFor(spec);
+  $('cSub').textContent = (ci === 'avg' ? `All ${picked.length} completed pay cycles shown` : `Pay cycle from ${dayLabel(cycles[Number(ci)].start)}${cycles[Number(ci)].inProgress ? ' (in progress)' : ''}`) +
+    ` · ${items.length} transaction${items.length === 1 ? '' : 's'} · ${money(total)}`;
+  $('cRows').innerHTML = items.map(t => `<tr class="tap" data-id="${esc(t.id)}"><td>${esc(t.description)}${isRegular(t) ? ' <span class="tag">regular</span>' : ''}<div class="sub">${new Date(t.createdAt).toLocaleDateString('en-AU')} · ${esc(t.account)}${t.category ? ' · ' + esc(catName(t.category)) : ''}</div></td><td class="amt neg">${money(t.amount)}</td></tr>`).join('');
+  if (!$('cycleDlg').open) $('cycleDlg').showModal();
+}
+$('cycleRows').onclick = e => { const td = e.target.closest('td[data-spec]'); if (td) openCycleTxns(td.dataset.spec, td.dataset.c); };
+$('cClose').onclick = () => $('cycleDlg').close();
+$('cycleDlg').onclick = e => { if (e.target === $('cycleDlg')) $('cycleDlg').close(); };
+$('cRows').onclick = e => {   // tap a transaction to review/mark its vendor
+  const tr = e.target.closest('tr[data-id]'), t = tr && lastRows.find(x => x.id === tr.dataset.id);
+  if (t) { $('cycleDlg').close(); openVendor(vendorKey(t), t.id); }
+};
 
 // ---- Regular payments ----
 const FREQS = [
