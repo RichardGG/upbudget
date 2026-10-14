@@ -83,6 +83,10 @@
   .vlist tr.hl td { background:var(--line); }
   .scroll { overflow-x:auto; max-width:100%; }
   @media (max-width: 600px) {
+    /* pay cycle table: keep the sticky category column narrow so the numbers get the room */
+    table.cyc td:first-child, table.cyc th:first-child { white-space:normal; width:92px; min-width:92px; max-width:92px; font-size:11px; line-height:1.25; overflow-wrap:anywhere; box-shadow:1px 0 0 var(--line); }
+    table.cyc tr.sub td:first-child { padding-left:10px; }
+    table.cyc td, table.cyc th { padding:4px 4px; }
     table.proj { font-size:12px; } table.proj th, table.proj td { padding:4px 3px; }
     #recTable { font-size:13px; min-width:560px; }
   }
