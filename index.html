@@ -434,7 +434,7 @@ const PROJ_STYLES = [{ dash: '2 4', name: 'Last 3 months pace' }, { dash: '8 4',
 const MAX_PROJ_DAYS = 40 * 365;
 // Chart view state: balZoom = x-range to show; projRange = the history window whose pace drives the "selected range" projection
 // (both as absolute day indices); balMode = what a drag on the graph does.
-let balZoom = null, projRange = null, balMode = 'zoom', balArgs = [0, Infinity];
+let balZoom = null, projRange = null, balMode = 'zoom', balArgs = [0, Infinity], balShowsFuture = false;
 const redrawBalance = () => renderBalanceChart(...balArgs);
 const absToDate = a => new Date(a * 864e5).toISOString().slice(0, 10);
 const dateToAbs = v => Math.round(Date.parse(v + 'T00:00:00Z') / 864e5);
@@ -487,6 +487,9 @@ function renderBalanceChart(sinceMs, untilMs) {
     iEnd = showProj && finite.length ? todayD + Math.ceil(Math.max(...finite) * 1.03) : i1;   // x-axis runs on into the future
   }
   $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}, when the loan balance first rose above $0); the left of "today" is history, dashed lines are projections.` + (z ? ` Zoomed to ${shortDay(set.start + i0)} – ${shortDay(set.start + iEnd)}.` : '');
+  balShowsFuture = iEnd > todayD;
+  if ($('showProj').checked && projs.length && !showProj)
+    $('balNote').textContent += ' Projections are hidden because this view ends before today (widen the date range at the top, or reset the zoom).';
   syncBalTools();
 
   // Payoff table
@@ -1522,9 +1525,11 @@ const onPrDates = () => {
   redrawBalance();
 };
 $('prFrom').onchange = $('prTo').onchange = onPrDates;
-$('showProj').onchange = () => renderBalanceChart(
-  $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0,
-  $('until').value ? new Date($('until').value + 'T23:59:59').getTime() : Infinity);
+$('showProj').onchange = () => {
+  // Turning projections on while zoomed into the past would show nothing, so go back to a view that can show them
+  if ($('showProj').checked && balZoom && !balShowsFuture) balZoom = null;
+  redrawBalance();
+};
 $('recOnly').onchange = renderRecurring;
 $('recRows').onchange = e => {
   const k = e.target.dataset.key; if (k === undefined) return;
