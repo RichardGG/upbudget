@@ -224,6 +224,17 @@
       <span><span class="k" style="background:var(--s3)"></span>Debt remaining</span>
     </div>
     <label class="sub"><input type="checkbox" id="showProj" checked> Show payoff projections</label>
+    <div class="controls" id="balTools" style="align-items:center">
+      <span class="sub">Drag on the graph to:</span>
+      <label class="sub"><input type="radio" name="balMode" value="zoom" checked> Zoom in</label>
+      <label class="sub"><input type="radio" name="balMode" value="proj"> Set projection range</label>
+      <button id="balHistory" style="background:none;color:var(--accent)">History only</button>
+      <button id="balResetZoom" hidden>Reset zoom</button>
+    </div>
+    <div class="controls" style="align-items:center">
+      <label class="sub">Projection based on <input type="date" id="prFrom" aria-label="Projection range from"> to <input type="date" id="prTo" aria-label="Projection range to"></label>
+      <button id="prClear" hidden style="background:none;color:var(--muted)">Clear</button>
+    </div>
     <div class="chart"><svg id="balChart" role="img" tabindex="0" aria-label="Home loan, offset and remaining debt balances over time"></svg><div id="balTip" class="tip" hidden></div></div>
     <div id="balNote" class="sub"></div>
     <div id="projBox" hidden>
@@ -421,7 +432,19 @@ function niceTicks(lo, hi, n = 4) {
 // all-history pace, when would it reach zero? (Pace already includes interest and how much you save.)
 const PROJ_STYLES = [{ dash: '2 4', name: 'Last 3 months pace' }, { dash: '8 4', name: 'Last 12 months pace' }, { dash: '', name: 'All-history pace' }];
 const MAX_PROJ_DAYS = 40 * 365;
-function computeProjections(set) {
+// Chart view state: balZoom = x-range to show; projRange = the history window whose pace drives the "selected range" projection
+// (both as absolute day indices); balMode = what a drag on the graph does.
+let balZoom = null, projRange = null, balMode = 'zoom', balArgs = [0, Infinity];
+const redrawBalance = () => renderBalanceChart(...balArgs);
+const absToDate = a => new Date(a * 864e5).toISOString().slice(0, 10);
+const dateToAbs = v => Math.round(Date.parse(v + 'T00:00:00Z') / 864e5);
+const shortDay = a => new Date(a * 864e5).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+function syncBalTools() {
+  $('balResetZoom').hidden = !balZoom; $('balHistory').hidden = !!(balZoom && balZoom.history); $('prClear').hidden = !projRange;
+  $('prFrom').value = projRange ? absToDate(projRange.a) : ''; $('prTo').value = projRange ? absToDate(projRange.b) : '';
+}
+
+function computeProjections(set, range) {
   const t = set.N - 1, out = [];
   [90, 365, t].forEach((w, i) => {
     if (w < 30 || w > t) return;
@@ -430,9 +453,15 @@ function computeProjections(set) {
     const sr = per(set.remaining), sd = per(set.debt);
     out.push({ ...PROJ_STYLES[i], w, slopeRem: sr, slopeDebt: sd, daysRem: fin(set.remaining, sr), daysDebt: fin(set.debt, sd) });
   });
+  if (range) {   // the user's own window: pace measured between two chosen days
+    const a = Math.max(0, Math.min(t - 1, range.a - set.start)), b = Math.max(a + 1, Math.min(t, range.b - set.start)), w = b - a;
+    const per = arr => (arr[b] - arr[a]) / w, fin = (arr, s) => arr[t] <= 0 ? 0 : s < 0 ? arr[t] / -s : Infinity;
+    const sr = per(set.remaining), sd = per(set.debt);
+    out.push({ name: `Selected range (${shortDay(set.start + a)} – ${shortDay(set.start + b)})`, short: 'Selected range', custom: true, color: 'var(--accent)', dash: '', w, slopeRem: sr, slopeDebt: sd, daysRem: fin(set.remaining, sr), daysDebt: fin(set.debt, sd) });
+  }
   return out;
 }
-const spanText = days => { const m = Math.round(days / 30.44), y = Math.floor(m / 12); return days <= 0 ? 'now' : (y ? `${y} yr ` : '') + (m % 12 || !y ? `${m % 12} mo` : '').trim(); };
+const spanText = days => { const m = Math.round(days / 30.44), y = Math.floor(m / 12); return days <= 0 ? 'now' : ((y ? `${y} yr ` : '') + (m % 12 || !y ? `${m % 12} mo` : '')).trim(); };
 const payoffText = (set, days) => !isFinite(days) ? 'Not on track (not falling)' : days <= 0 ? 'Already paid off'
   : days > MAX_PROJ_DAYS ? 'More than 40 years' : `${new Date((set.N - 1 + set.start + days) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })} (${spanText(days)})`;
 
@@ -441,18 +470,28 @@ function renderBalanceChart(sinceMs, untilMs) {
   const set = buildBalanceSeries(lastRows, lastAccountInfo);
   if (!set || !lastAccountInfo.some(a => a.type === 'HOME_LOAN')) { svg.innerHTML = ''; return; }
   const todayD = set.N - 1;
-  const i0 = Math.max(0, (sinceMs ? dayIdx(sinceMs) : 0) - set.start), i1 = Math.min(todayD, (isFinite(untilMs) ? dayIdx(untilMs) : set.N) - set.start);
-  if (i1 <= i0) { svg.innerHTML = ''; $('balNote').textContent = 'No transaction history in this date range.'; return; }
+  const i0Base = Math.max(0, (sinceMs ? dayIdx(sinceMs) : 0) - set.start), i1Base = Math.min(todayD, (isFinite(untilMs) ? dayIdx(untilMs) : set.N) - set.start);
+    balArgs = [sinceMs, untilMs];
+  if (!balZoom && i1Base <= i0Base) { svg.innerHTML = ''; $('balNote').textContent = 'No transaction history in this date range.'; return; }
 
-  const projs = computeProjections(set);
-  const showProj = $('showProj').checked && i1 === todayD && projs.length > 0;
-  const finite = projs.filter(p => isFinite(p.daysRem) && p.daysRem > 0).map(p => Math.min(p.daysRem, MAX_PROJ_DAYS));
-  const iEnd = showProj && finite.length ? todayD + Math.ceil(Math.max(...finite) * 1.03) : i1;   // x-axis runs on into the future
-  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}, when the loan balance first rose above $0); the left of "today" is history, dashed lines are projections.`;
+  const projs = computeProjections(set, projRange);
+  let i0 = i0Base, i1 = i1Base, iEnd, showProj;
+  const z = balZoom && balZoom.history ? { a: set.start + i0Base, b: set.start + i1Base } : balZoom;   // "history only" = no future
+  if (z) {   // zoomed: the x-axis is exactly the chosen range (a drag can include the projected future)
+    i0 = Math.max(0, Math.min(todayD, z.a - set.start));
+    iEnd = Math.max(i0 + 7, z.b - set.start); i1 = Math.min(todayD, iEnd);
+    showProj = $('showProj').checked && projs.length > 0 && iEnd > todayD;
+  } else {
+    showProj = $('showProj').checked && i1 === todayD && projs.length > 0;
+    const finite = projs.filter(p => isFinite(p.daysRem) && p.daysRem > 0).map(p => Math.min(p.daysRem, MAX_PROJ_DAYS));
+    iEnd = showProj && finite.length ? todayD + Math.ceil(Math.max(...finite) * 1.03) : i1;   // x-axis runs on into the future
+  }
+  $('balNote').textContent = `Reconstructed from your transactions (history starts ${dayLabel(set.start)}, when the loan balance first rose above $0); the left of "today" is history, dashed lines are projections.` + (z ? ` Zoomed to ${shortDay(set.start + i0)} – ${shortDay(set.start + iEnd)}.` : '');
+  syncBalTools();
 
   // Payoff table
   $('projBox').hidden = !projs.length;
-  $('projRows').innerHTML = projs.map(p => `<tr><td>${esc(p.name)}</td>
+  $('projRows').innerHTML = projs.map(p => `<tr><td>${p.custom ? '<b>' + esc(p.name) + '</b>' : esc(p.name)}</td>
     <td class="amt">${money(-p.slopeRem * 30.44)}/mo</td><td class="amt">${esc(payoffText(set, p.daysRem))}</td><td class="amt">${esc(payoffText(set, p.daysDebt))}</td></tr>`).join('');
 
   const series = [
@@ -472,6 +511,10 @@ function renderBalanceChart(sinceMs, untilMs) {
     const d = Math.round(i0 + (iEnd - i0) * k / 5);
     out += `<text x="${X(d)}" y="${H - 6}" text-anchor="${k === 0 ? 'start' : k === 5 ? 'end' : 'middle'}">${new Date((set.start + d) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })}</text>`;
   }
+  if (projRange) {   // shade the window the "selected range" projection is based on
+    const pa = projRange.a - set.start, pb = projRange.b - set.start, x1 = X(Math.max(pa, i0)), x2 = X(Math.min(pb, iEnd));
+    if (x2 > x1) out += `<rect x="${x1}" y="${T}" width="${x2 - x1}" height="${ph}" fill="var(--accent)" fill-opacity=".13"/><text x="${x1 + 4}" y="${T + 22}" style="fill:var(--accent)">Projection basis</text>`;
+  }
   const step = Math.max(1, Math.floor((i1 - i0) / 900));
   for (const x of series) {
     let path = '';
@@ -480,18 +523,18 @@ function renderBalanceChart(sinceMs, untilMs) {
     out += `<path d="${path}" fill="none" stroke="${x.color}" stroke-width="2" stroke-linejoin="round"/>`;
   }
   if (showProj) {
-    out += `<line x1="${X(todayD)}" x2="${X(todayD)}" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-opacity=".5"/><text x="${X(todayD) - 4}" y="${T + 8}" text-anchor="end">Today</text>`;
+    out += `<line x1="${X(todayD)}" x2="${X(todayD)}" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-opacity=".5"/><text x="${X(todayD) + (X(todayD) < L + 40 ? 4 : -4)}" y="${T + 8}" text-anchor="${X(todayD) < L + 40 ? 'start' : 'end'}">Today</text>`;
     for (const p of projs) {
       const end = Math.min(iEnd, todayD + (isFinite(p.daysRem) ? p.daysRem : MAX_PROJ_DAYS), todayD + MAX_PROJ_DAYS);
       if (p.daysRem <= 0 || end <= todayD) continue;
-      out += `<line x1="${X(todayD)}" y1="${Y(set.remaining[todayD])}" x2="${X(end)}" y2="${Y(projVal(p, end))}" stroke="var(--s3)" stroke-width="2" stroke-dasharray="${p.dash}" stroke-linecap="round"/>`;
-      if (isFinite(p.daysRem) && p.daysRem <= MAX_PROJ_DAYS) out += `<circle cx="${X(end)}" cy="${Y(0)}" r="4" fill="var(--s3)" stroke="var(--bg)" stroke-width="2"/>`;
+      out += `<line x1="${X(todayD)}" y1="${Y(set.remaining[todayD])}" x2="${X(end)}" y2="${Y(projVal(p, end))}" stroke="${p.color || 'var(--s3)'}" stroke-width="${p.custom ? 3 : 2}" stroke-dasharray="${p.dash}" stroke-linecap="round"/>`;
+      if (isFinite(p.daysRem) && p.daysRem <= MAX_PROJ_DAYS) out += `<circle cx="${X(end)}" cy="${Y(0)}" r="4" fill="${p.color || 'var(--s3)'}" stroke="var(--bg)" stroke-width="2"/>`;
     }
     // end-of-line key in the right margin: dash swatch, scenario name, payoff date (stacked so nothing collides)
     projs.slice().sort((a, b) => a.daysRem - b.daysRem).forEach((p, k) => {
-      const y = T + ph - 66 + k * 30 - (projs.length - 3) * 0;
-      out += `<line x1="${L + pw + 8}" x2="${L + pw + 26}" y1="${y}" y2="${y}" stroke="var(--s3)" stroke-width="2" stroke-dasharray="${p.dash}" stroke-linecap="round"/>
-        <text x="${L + pw + 30}" y="${y}" dominant-baseline="middle" class="lbl">${esc(p.name.replace(' pace', ''))}</text>
+      const y = T + ph - 30 * projs.length + 24 + k * 30;
+      out += `<line x1="${L + pw + 8}" x2="${L + pw + 26}" y1="${y}" y2="${y}" stroke="${p.color || 'var(--s3)'}" stroke-width="${p.custom ? 3 : 2}" stroke-dasharray="${p.dash}" stroke-linecap="round"/>
+        <text x="${L + pw + 30}" y="${y}" dominant-baseline="middle" class="lbl">${esc(p.short || p.name.replace(' pace', ''))}</text>
         <text x="${L + pw + 30}" y="${y + 13}" dominant-baseline="middle">${esc(isFinite(p.daysRem) ? (p.daysRem <= 0 ? 'paid off' : p.daysRem > MAX_PROJ_DAYS ? '40+ years' : new Date((todayD + set.start + p.daysRem) * 864e5).toLocaleDateString('en-AU', { month: 'short', year: 'numeric', timeZone: 'UTC' })) : 'not falling')}</text>`;
     });
   } else {
@@ -502,7 +545,7 @@ function renderBalanceChart(sinceMs, untilMs) {
   }
   out += `<line id="balCross" y1="${T}" y2="${T + ph}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>` +
     series.map(x => `<circle id="balDot_${x.key}" r="4" fill="${x.color}" stroke="var(--bg)" stroke-width="2" visibility="hidden"/>`).join('') +
-    `<rect id="balHit" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent"/>`;
+    `<rect id="balSel" y="${T}" height="${ph}" fill="${balMode === 'proj' ? 'var(--accent)' : 'var(--fg)'}" fill-opacity=".14" stroke="${balMode === 'proj' ? 'var(--accent)' : 'var(--muted)'}" stroke-dasharray="4 3" visibility="hidden"/><rect id="balHit" x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent" style="cursor:crosshair"/>`;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = out;
 
@@ -517,7 +560,7 @@ function renderBalanceChart(sinceMs, untilMs) {
     if (!future) for (const x of series) {
       const c = $('balDot_' + x.key); c.setAttribute('cx', X(d)); c.setAttribute('cy', Y(x.v[d])); c.setAttribute('visibility', 'visible');
       rows.push([x.color, x.name, money(x.v[d])]);
-    } else for (const p of projs) rows.push(['var(--s3)', `${p.name.replace(' pace', '')} (projected)`, money(projVal(p, d))]);
+    } else for (const p of projs) rows.push([p.color || 'var(--s3)', `${p.short || p.name.replace(' pace', '')} (projected)`, money(projVal(p, d))]);
     tip.replaceChildren();
     const dd = document.createElement('div'); dd.className = 'd'; dd.textContent = dayLabel(set.start + d) + (future ? ' · debt remaining' : ''); tip.append(dd);
     for (const [color, name, value] of rows) {
@@ -531,8 +574,24 @@ function renderBalanceChart(sinceMs, untilMs) {
   };
   const hide = () => { tip.hidden = true; $('balCross').setAttribute('visibility', 'hidden'); hideDots(); };
   const hit = $('balHit');
-  hit.onpointermove = e => { const box = svg.getBoundingClientRect(); show(Math.round(i0 + ((e.clientX - box.left) / box.width * W - L) / pw * (iEnd - i0))); };
-  hit.onpointerleave = hide;
+  // Drag across the graph to pick a range (zoom in, or set the window the projection is calculated from)
+  const dayAt = e => { const box = svg.getBoundingClientRect(); return Math.max(i0, Math.min(iEnd, Math.round(i0 + ((e.clientX - box.left) / box.width * W - L) / pw * (iEnd - i0)))); };
+  const sel = $('balSel');
+  let drag = null;
+  const paintSel = () => { const a = Math.min(drag.d0, drag.d1), b = Math.max(drag.d0, drag.d1); sel.setAttribute('x', X(a)); sel.setAttribute('width', X(b) - X(a)); sel.setAttribute('visibility', 'visible'); };
+  hit.onpointerdown = e => { hit.setPointerCapture(e.pointerId); drag = { d0: dayAt(e), d1: dayAt(e) }; hide(); };
+  hit.onpointermove = e => { if (drag) { drag.d1 = dayAt(e); paintSel(); } else show(dayAt(e)); };
+  hit.onpointerup = e => {
+    if (!drag) return;
+    const a = Math.min(drag.d0, drag.d1), b = Math.max(drag.d0, drag.d1); drag = null; sel.setAttribute('visibility', 'hidden');
+    if (b - a < 7) return;                                      // a click, or too small to mean anything
+    if (balMode === 'proj') { const b2 = Math.min(b, todayD); if (b2 - a < 7) return; projRange = { a: set.start + a, b: set.start + b2 }; }
+    else balZoom = { a: set.start + a, b: set.start + b };
+    redrawBalance();
+  };
+  hit.onpointercancel = () => { drag = null; sel.setAttribute('visibility', 'hidden'); };
+  hit.ondblclick = () => { if (balZoom) { balZoom = null; redrawBalance(); } };
+  hit.onpointerleave = () => { if (!drag) hide(); };
   svg.onkeydown = e => {
     const stepDays = e.shiftKey ? 30 : 1;
     if (e.key === 'ArrowLeft') show((cur ?? i1) - stepDays); else if (e.key === 'ArrowRight') show((cur ?? i1) + stepDays);
@@ -1453,6 +1512,16 @@ $('salarySel').onchange = e => { try { localStorage.setItem('up_salary', e.targe
 try { $('cycleHideReg').checked = localStorage.getItem('up_hide_regulars') === '1'; } catch {}
 $('cycleHideReg').onchange = () => { try { localStorage.setItem('up_hide_regulars', $('cycleHideReg').checked ? '1' : '0'); } catch {} renderCycles(); };
 $('cycleN').onchange = $('cycleSubs').onchange = () => renderCycles();
+document.querySelectorAll('input[name=balMode]').forEach(r => r.onchange = () => { balMode = r.value; redrawBalance(); });
+$('balHistory').onclick = () => { balZoom = { history: true }; redrawBalance(); };
+$('balResetZoom').onclick = () => { balZoom = null; redrawBalance(); };
+$('prClear').onclick = () => { projRange = null; redrawBalance(); };
+const onPrDates = () => {
+  const f = $('prFrom').value, t = $('prTo').value;
+  if (f && t && dateToAbs(t) - dateToAbs(f) >= 7) projRange = { a: dateToAbs(f), b: dateToAbs(t) }; else if (!f && !t) projRange = null; else return;
+  redrawBalance();
+};
+$('prFrom').onchange = $('prTo').onchange = onPrDates;
 $('showProj').onchange = () => renderBalanceChart(
   $('since').value ? new Date($('since').value + 'T00:00:00').getTime() : 0,
   $('until').value ? new Date($('until').value + 'T23:59:59').getTime() : Infinity);

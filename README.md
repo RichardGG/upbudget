@@ -32,6 +32,7 @@ The page is split into tabs: **Transactions**, **Pay cycles**, **Flows** (money 
 - Filter by account, search by description/message/category
 - Money in / out / net totals (internal transfers excluded)
 - Home loan offset: loan balance minus the combined balance of all other accounts, with debt remaining
+  - Drag on the graph to zoom in (or switch the drag to choose a window for a custom "selected range" projection; the dates can also be typed). "History only" zooms to the past, double-click or Reset zoom to go back
   - Graph of loan balance, offset balance and debt remaining over time (rebuilt from transaction history; hover or use arrow keys for values, table view below)
   - Payoff projections (last 3 months, last 12 months and all-history pace) shown as dashed lines with estimated payoff dates
 - Transactions list grouped by pay cycle (collapsible, newest open), with a filter to show only, or hide, regular payments
