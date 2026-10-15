@@ -276,8 +276,19 @@ const MAX_PAGES = 300; // 100 transactions per page
 const YEARS = 10;
 
 // Default range: last 30 days
-const d = new Date(); $('until').value = d.toISOString().slice(0, 10);
-d.setFullYear(d.getFullYear() - YEARS); $('since').value = d.toISOString().slice(0, 10);
+// Default range: the last YEARS years up to today, in *local* dates (toISOString would give yesterday's date in the morning in Australia).
+// The defaults follow the clock on every Load until you edit the boxes yourself.
+const localISO = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+let sinceEdited = false, untilEdited = false;
+function applyDefaultRange() {
+  const d = new Date();
+  if (!untilEdited) $('until').value = localISO(d);
+  d.setFullYear(d.getFullYear() - YEARS);
+  if (!sinceEdited) $('since').value = localISO(d);
+}
+applyDefaultRange();
+$('since').addEventListener('change', () => { sinceEdited = true; });
+$('until').addEventListener('change', () => { untilEdited = true; });
 
 const DEFAULT_BASE = 'https://api.up.com.au/api/v1';
 const store = {
@@ -688,6 +699,7 @@ function showCacheInfo(rows, meta, added) {
 }
 
 async function load(force = false) {
+  applyDefaultRange();
   const auth = getAuth();
   $('status').className = '';
   if (!auth.token) { $('status').className = 'error'; $('status').textContent = 'Enter your Up token in Settings.'; return; }
